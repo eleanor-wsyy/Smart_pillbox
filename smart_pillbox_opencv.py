@@ -1,5 +1,4 @@
 import argparse
-import base64
 import os
 import time
 from dataclasses import dataclass, field
@@ -8,7 +7,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-
+# 小组作业更新：已加入摄像头 cv2.flip 左右镜像翻转
+# 汇报思路：原型阶段电脑端解耦运行 YOLO，未来量产落地到轻量硬件上同理无缝替换套用 FOMO 模型。
 # ==========================================
 # 阿尔茨海默症长者“记忆回音药盒”视觉识别原型 V3.2
 # ==========================================
@@ -109,7 +109,6 @@ class SlotVisionResult:
     roi: tuple[int, int, int, int]
     pill_count: int
     contours: list[np.ndarray] = field(default_factory=list)
-    class_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -138,7 +137,6 @@ def get_font(size, bold=False):
                 continue
     return ImageFont.load_default()
 
-
 def draw_badge(draw, text, rect, bg_color, text_color, font):
     """绘制圆角状态徽章并在中央填充文字"""
     draw.rounded_rectangle(rect, radius=5, fill=bg_color)
@@ -166,9 +164,6 @@ class PillDetector:
     """视觉识别检测类：将传统图像算法封装，便于后续接入 YOLO 或 FOMO 深度学习检测器"""
     def __init__(self):
         self.color_ranges = COLOR_RANGES
-
-    def detect_all(self, frame) -> dict[str, SlotVisionResult]:
-        return {key: self.detect(frame, key) for key in SLOTS_CONFIG}
 
     def build_color_mask(self, hsv_roi, color_ranges):
         mask = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
@@ -209,257 +204,6 @@ class PillDetector:
             roi=(x1, y1, x2, y2),
             pill_count=pill_count,
             contours=offset_contours(valid_contours, x1, y1),
-        )
-
-
-class RoboflowPillDetector:
-    """Roboflow hosted YOLOv11 pill-detection-fnftd/3 适配器。
-
-    该模型一次返回每粒药的框和类别（capsules/tablets），这里再按药格 ROI 汇总成
-    业务层需要的 SlotVisionResult，避免主流程关心底层是 OpenCV 还是云端 YOLO。
-    """
-    MODEL_ID = "pill-detection-fnftd/3"
-    MODEL_CLASSES = {"capsules", "tablets"}
-
-    def __init__(
-        self,
-        api_key,
-        confidence=0.4,
-        overlap=0.3,
-        api_url="https://serverless.roboflow.com",
-        min_interval=0.6,
-        timeout=8.0,
-    ):
-        if not api_key:
-            raise ValueError("使用 Roboflow 检测器需要设置 ROBOFLOW_API_KEY 或传入 --roboflow-api-key")
-
-        try:
-            import requests
-        except ImportError as exc:
-            raise RuntimeError("使用 Roboflow 检测器需要安装 requests：pip install requests") from exc
-
-        self.api_key = api_key
-        self.confidence = confidence
-        self.overlap = overlap
-        self.api_url = api_url.rstrip("/")
-        self.min_interval = max(0.0, min_interval)
-        self.timeout = timeout
-        self.session = requests.Session()
-        self.fallback_detector = PillDetector()
-        self.last_request_time = 0.0
-        self.cached_predictions = []
-        self.last_error = None
-
-    def detect_all(self, frame) -> dict[str, SlotVisionResult]:
-        predictions = self._infer_frame(frame)
-        if predictions is None:
-            return self.fallback_detector.detect_all(frame)
-        return {
-            key: self._build_slot_result(frame, key, predictions)
-            for key in SLOTS_CONFIG
-        }
-
-    def detect(self, frame, slot_key) -> SlotVisionResult:
-        return self.detect_all(frame)[slot_key]
-
-    def _infer_frame(self, frame):
-        now = time.monotonic()
-        if self.cached_predictions and now - self.last_request_time < self.min_interval:
-            return self.cached_predictions
-
-        ok, encoded = cv2.imencode(".jpg", frame)
-        if not ok:
-            self.last_error = "无法将当前帧编码为 JPEG"
-            return None
-
-        image_b64 = base64.b64encode(encoded).decode("ascii")
-        endpoint = f"{self.api_url}/{self.MODEL_ID}"
-        params = {
-            "api_key": self.api_key,
-            "confidence": self.confidence,
-            "overlap": self.overlap,
-            "format": "json",
-            "image_type": "base64",
-            "max_detections": 100,
-            "disable_active_learning": "true",
-        }
-
-        try:
-            response = self.session.post(
-                endpoint,
-                params=params,
-                data=image_b64,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:
-            self.last_error = str(exc)
-            print(f"[WARNING] Roboflow 推理失败，已回退到本地 OpenCV 检测：{self.last_error}")
-            return None
-
-        predictions = payload.get("predictions", [])
-        self.cached_predictions = [
-            p for p in predictions
-            if str(p.get("class", "")).lower() in self.MODEL_CLASSES
-        ]
-        self.last_request_time = now
-        self.last_error = None
-        return self.cached_predictions
-
-    def _build_slot_result(self, frame, slot_key, predictions):
-        config = SLOTS_CONFIG[slot_key]
-        x1, y1, x2, y2, cx, cy, radius = slot_geometry(frame.shape, config)
-        slot_area = max(1, np.pi * radius * radius)
-
-        contours = []
-        class_counts = {}
-        confidences = []
-        detected_area = 0.0
-
-        for pred in predictions:
-            px = float(pred.get("x", 0.0))
-            py = float(pred.get("y", 0.0))
-            if (px - cx) ** 2 + (py - cy) ** 2 > radius ** 2:
-                continue
-
-            width = float(pred.get("width", 0.0))
-            height = float(pred.get("height", 0.0))
-            bx1 = int(max(0, px - width / 2))
-            by1 = int(max(0, py - height / 2))
-            bx2 = int(min(frame.shape[1] - 1, px + width / 2))
-            by2 = int(min(frame.shape[0] - 1, py + height / 2))
-            contours.append(np.array([[[bx1, by1]], [[bx2, by1]], [[bx2, by2]], [[bx1, by2]]], dtype=np.int32))
-            detected_area += max(0, bx2 - bx1) * max(0, by2 - by1)
-
-            class_name = str(pred.get("class", "pill"))
-            class_counts[class_name] = class_counts.get(class_name, 0) + 1
-            confidences.append(float(pred.get("confidence", 0.0)))
-
-        pill_count = len(contours)
-        return SlotVisionResult(
-            present=pill_count > 0,
-            confidence=max(confidences) if confidences else 0.0,
-            color_ratio=min(1.0, detected_area / slot_area),
-            roi=(x1, y1, x2, y2),
-            pill_count=pill_count,
-            contours=contours,
-            class_counts=class_counts,
-        )
-
-
-class LocalYoloPillDetector:
-    """电脑端本地 YOLO 药丸检测器。
-
-    适合加载从 Roboflow/Ultralytics 导出的药丸检测权重，例如 best.pt。
-    注意：仓库里的 yolo11n.pt/yolo26n.pt 是 COCO 通用预训练权重，不是药丸专用模型。
-    """
-    EXPECTED_PILL_NAMES = {"capsule", "capsules", "tablet", "tablets", "pill", "pills"}
-
-    def __init__(self, model_path, confidence=0.4):
-        if not model_path:
-            raise ValueError("使用本地 YOLO 检测器需要传入 --yolo-model，例如 --yolo-model best.pt")
-
-        model_path = Path(model_path)
-        if not model_path.exists():
-            raise FileNotFoundError(f"找不到 YOLO 权重文件：{model_path}")
-
-        try:
-            from ultralytics import YOLO
-        except ImportError as exc:
-            raise RuntimeError("使用本地 YOLO 检测器需要安装 ultralytics：pip install ultralytics") from exc
-
-        self.model_path = model_path
-        self.model = YOLO(str(model_path))
-        self.confidence = confidence
-        self.names = self.model.names
-
-        model_class_names = {str(name).lower() for name in self.names.values()}
-        self.allowed_class_names = model_class_names & self.EXPECTED_PILL_NAMES
-        if not (model_class_names & self.EXPECTED_PILL_NAMES):
-            print(
-                "[WARNING] 当前 YOLO 权重的类别看起来不是药丸数据集；"
-                "如果使用 yolo11n.pt/yolo26n.pt，检测到的是 COCO 通用物体，不适合药片识别。"
-            )
-
-    def detect_all(self, frame) -> dict[str, SlotVisionResult]:
-        predictions = self._infer_frame(frame)
-        return {
-            key: self._build_slot_result(frame, key, predictions)
-            for key in SLOTS_CONFIG
-        }
-
-    def detect(self, frame, slot_key) -> SlotVisionResult:
-        return self.detect_all(frame)[slot_key]
-
-    def _infer_frame(self, frame):
-        results = self.model.predict(frame, conf=self.confidence, verbose=False)
-        if not results:
-            return []
-
-        result = results[0]
-        predictions = []
-        if result.boxes is None:
-            return predictions
-
-        for box in result.boxes:
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            class_id = int(box.cls[0])
-            class_name = str(self.names.get(class_id, class_id))
-            if str(class_name).lower() not in self.allowed_class_names:
-                continue
-            confidence = float(box.conf[0])
-            predictions.append({
-                "x1": x1,
-                "y1": y1,
-                "x2": x2,
-                "y2": y2,
-                "x": (x1 + x2) / 2,
-                "y": (y1 + y2) / 2,
-                "width": x2 - x1,
-                "height": y2 - y1,
-                "class": class_name,
-                "confidence": confidence,
-            })
-        return predictions
-
-    def _build_slot_result(self, frame, slot_key, predictions):
-        config = SLOTS_CONFIG[slot_key]
-        x1, y1, x2, y2, cx, cy, radius = slot_geometry(frame.shape, config)
-        slot_area = max(1, np.pi * radius * radius)
-
-        contours = []
-        class_counts = {}
-        confidences = []
-        detected_area = 0.0
-
-        for pred in predictions:
-            px = float(pred.get("x", 0.0))
-            py = float(pred.get("y", 0.0))
-            if (px - cx) ** 2 + (py - cy) ** 2 > radius ** 2:
-                continue
-
-            bx1 = int(max(0, pred.get("x1", px - pred.get("width", 0.0) / 2)))
-            by1 = int(max(0, pred.get("y1", py - pred.get("height", 0.0) / 2)))
-            bx2 = int(min(frame.shape[1] - 1, pred.get("x2", px + pred.get("width", 0.0) / 2)))
-            by2 = int(min(frame.shape[0] - 1, pred.get("y2", py + pred.get("height", 0.0) / 2)))
-            contours.append(np.array([[[bx1, by1]], [[bx2, by1]], [[bx2, by2]], [[bx1, by2]]], dtype=np.int32))
-            detected_area += max(0, bx2 - bx1) * max(0, by2 - by1)
-
-            class_name = str(pred.get("class", "pill"))
-            class_counts[class_name] = class_counts.get(class_name, 0) + 1
-            confidences.append(float(pred.get("confidence", 0.0)))
-
-        pill_count = len(contours)
-        return SlotVisionResult(
-            present=pill_count > 0,
-            confidence=max(confidences) if confidences else 0.0,
-            color_ratio=min(1.0, detected_area / slot_area),
-            roi=(x1, y1, x2, y2),
-            pill_count=pill_count,
-            contours=contours,
-            class_counts=class_counts,
         )
 
 
@@ -906,12 +650,7 @@ def draw_slot_overlay_pil(draw, vision_results, feedback, tracker):
         
         if result.present:
             actual = result.pill_count
-            class_text = ""
-            if result.class_counts:
-                class_text = "  |  " + ", ".join(
-                    f"{name}:{count}" for name, count in sorted(result.class_counts.items())
-                )
-            info_str = f"处方: {expected} 粒  |  当前: {actual} 粒{class_text}"
+            info_str = f"处方: {expected} 粒  |  当前: {actual} 粒"
             info_color = (220, 225, 235, 255)
         else:
             actual = tracker.last_pill_count[key] if tracker is not None else expected
@@ -1016,12 +755,9 @@ def process_frame(frame, action_label="idle", tracker=None, detector=None):
     output = frame.copy()
     
     # 1. 视觉检测提取
-    if hasattr(detector, "detect_all"):
-        vision_results = detector.detect_all(frame)
-    else:
-        vision_results = {
-            key: detector.detect(frame, key) for key in SLOTS_CONFIG
-        }
+    vision_results = {
+        key: detector.detect(frame, key) for key in SLOTS_CONFIG
+    }
 
     # 2. 状态逻辑更新
     if tracker is None:
@@ -1203,39 +939,14 @@ def handle_keypress(key, slot_states, current_action):
     return current_action, False
 
 
-def create_detector_from_args(args):
-    if args.detector == "yolo":
-        detector = LocalYoloPillDetector(
-            model_path=args.yolo_model,
-            confidence=args.yolo_confidence,
-        )
-        print(f"检测后端：本地 YOLO（{args.yolo_model}）")
-        return detector
-
-    if args.detector == "roboflow":
-        if not args.roboflow_api_key:
-            raise SystemExit("错误：使用 --detector roboflow 需要设置 ROBOFLOW_API_KEY 或传入 --roboflow-api-key")
-        detector = RoboflowPillDetector(
-            api_key=args.roboflow_api_key,
-            confidence=args.roboflow_confidence,
-            overlap=args.roboflow_overlap,
-        )
-        print("检测后端：Roboflow pill-detection-fnftd/3（capsules/tablets 目标检测）")
-        return detector
-
-    print("检测后端：本地 OpenCV 颜色/轮廓检测")
-    return PillDetector()
-
-
-def save_demo_snapshot(path, detector=None):
+def save_demo_snapshot(path):
     """保存一张模拟器识别结果的精美截图"""
     global CURRENT_PERIOD
     CURRENT_PERIOD = "Morning"
     # 早上放2颗，中午放1颗，晚上放3颗。然后晚上拿走1颗触发拿错药警报！
     slot_states = {"Morning": 2, "Noon": 1, "Evening": 3}
     tracker = MedicationTracker(SLOTS_CONFIG.keys())
-    if detector is None:
-        detector = PillDetector()
+    detector = PillDetector()
     
     # 首先更新一帧，记录初始装药量（3颗）
     frame_init = draw_simulator_scene(slot_states, "idle")
@@ -1262,19 +973,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Memory Echo Pillbox OpenCV prototype V3.2")
     parser.add_argument("--camera-index", type=int, default=0, help="摄像头编号，默认 0")
     parser.add_argument("--no-camera", action="store_true", help="强制使用模拟器")
-    parser.add_argument("--no-camera-mirror", action="store_true", help="关闭摄像头水平镜像翻转")
     parser.add_argument("--snapshot", type=str, help="保存一张模拟器识别结果截图后退出")
-    parser.add_argument(
-        "--detector",
-        choices=("opencv", "yolo", "roboflow"),
-        default="opencv",
-        help="药丸检测后端：opencv 为本地颜色/轮廓检测，yolo 为电脑端本地 YOLO，roboflow 为云端 YOLOv11",
-    )
-    parser.add_argument("--yolo-model", default="best.pt", help="本地 YOLO 药丸检测权重路径，例如从 Roboflow 导出的 best.pt")
-    parser.add_argument("--yolo-confidence", type=float, default=0.4, help="本地 YOLO 检测置信度阈值")
-    parser.add_argument("--roboflow-api-key", default=os.getenv("ROBOFLOW_API_KEY"), help="Roboflow API key，也可用环境变量 ROBOFLOW_API_KEY")
-    parser.add_argument("--roboflow-confidence", type=float, default=0.4, help="Roboflow 检测置信度阈值")
-    parser.add_argument("--roboflow-overlap", type=float, default=0.3, help="Roboflow NMS overlap 阈值")
     return parser.parse_args()
 
 
@@ -1282,15 +981,14 @@ def main():
     global CURRENT_PERIOD
     args = parse_args()
 
-    detector = create_detector_from_args(args)
-
     if args.snapshot:
-        save_demo_snapshot(args.snapshot, detector)
+        save_demo_snapshot(args.snapshot)
         return
 
     # 早上默认有2粒（正确用量），中午1粒（正确），晚上3粒（正确）
     slot_states = {"Morning": 2, "Noon": 1, "Evening": 3}
     tracker = MedicationTracker(SLOTS_CONFIG.keys())
+    detector = PillDetector()
     current_action = "idle"
 
     cap = None
@@ -1316,8 +1014,7 @@ def main():
                     cap.release()
                 continue
             frame = cv2.resize(frame, (900, 560))
-            if not args.no_camera_mirror:
-                cv2.flip(frame, 1, frame)
+            cv2.flip(frame, 1, frame)
         else:
             frame = draw_simulator_scene(slot_states, current_action)
 

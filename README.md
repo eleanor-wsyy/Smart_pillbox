@@ -132,3 +132,34 @@ roi
 ## 免责声明
 
 本项目是课程作业与原型演示，不可作为真实医疗诊断或用药决策系统。真实使用前需要经过专业数据采集、模型验证、隐私合规与医疗安全评估。
+
+## Frontend Mobile App Demo
+
+The `frontend/` directory contains the caregiver-facing mobile monitoring demo exported from Figma Make. It is a Vite + React prototype for viewing pillbox status, live monitoring, medication history, alerts, and settings.
+
+Run the frontend demo:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+If you use pnpm:
+
+```bash
+cd frontend
+pnpm install
+pnpm dev
+```
+
+Suggested full-system story for presentation:
+
+```text
+Python OpenCV / YOLO smart pillbox backend
+        -> pill count, slot status, alerts, swallow events
+        -> future API layer such as Flask or FastAPI
+        -> frontend mobile caregiver dashboard
+```
+
+The current frontend is a visual and interaction prototype. It does not yet call the Python camera program directly.

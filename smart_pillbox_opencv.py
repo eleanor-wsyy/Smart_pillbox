@@ -145,11 +145,15 @@ def draw_badge(draw, text, rect, bg_color, text_color, font):
         bbox = draw.textbbox((0, 0), text, font=font)
         tw = bbox[2] - bbox[0]
         th = bbox[3] - bbox[1]
+        offset_x = bbox[0]
+        offset_y = bbox[1]
     except AttributeError:
         tw, th = draw.textsize(text, font=font)
-        
-    tx = x1 + (x2 - x1 - tw) // 2
-    ty = y1 + (y2 - y1 - th) // 2 - 1
+        offset_x = 0
+        offset_y = 0
+
+    tx = x1 + (x2 - x1 - tw) // 2 - offset_x
+    ty = y1 + (y2 - y1 - th) // 2 - offset_y
     draw.text((tx, ty), text, font=font, fill=text_color)
 
 
@@ -564,31 +568,29 @@ def draw_top_banner_pil(draw, tracker, action_label):
         draw.text((900 - 240, 22), streak_str, font=font_info, fill=(255, 215, 0, 255))
 
 
-def draw_slot_overlay_pil(draw, vision_results, feedback, tracker):
+def draw_slot_overlay_pil(draw, vision_results, feedback, tracker, frame_shape=None):
     """为早中晚药格绘制半透明磨砂圆角信息卡片与状态彩色徽章"""
     font_title = get_font(12, bold=True)
     font_text = get_font(11)
     font_badge = get_font(10, bold=True)
-    
+    frame_w = frame_shape[1] if frame_shape is not None else max(result.roi[2] for result in vision_results.values())
+    card_w = min(230, max(180, int(frame_w * 0.20)))
+    card_h = 85
+    gap_to_slot = 14
+    safe_top = 76
+
     for key, config in SLOTS_CONFIG.items():
         result = vision_results[key]
         slot_feedback = feedback[key]
         
-        # 药格中心 x 轴
         x1, y1, x2, y2 = result.roi
         cx = (x1 + x2) // 2
-        
-        # 悬浮信息卡片尺寸与位置
-        card_w, card_h = 180, 74
-        cx_card = cx
-        cy_card = y1 + 18  # 向上偏移悬浮
-        
-        card_x1 = cx_card - card_w // 2
-        card_y1 = cy_card - card_h // 2
-        card_x2 = cx_card + card_w // 2
-        card_y2 = cy_card + card_h // 2
-        
-        # 解析反馈状态并进行个性化徽章配色映射
+
+        card_x1 = min(max(8, cx - card_w // 2), max(8, frame_w - card_w - 8))
+        card_x2 = card_x1 + card_w
+        card_y2 = max(safe_top + card_h, y1 - gap_to_slot)
+        card_y1 = card_y2 - card_h
+
         status = slot_feedback.status
         status_text = slot_feedback.text
         
@@ -660,15 +662,33 @@ def draw_slot_overlay_pil(draw, vision_results, feedback, tracker):
         draw.text((card_x1 + 12, card_y1 + 32), info_str, font=font_text, fill=info_color)
         
         # 绘制状态圆角徽章
-        badge_rect = [card_x1 + 12, card_y1 + 48, card_x2 - 12, card_y1 + 66]
+        badge_rect = [card_x1 + 12, card_y1 + 54, card_x2 - 12, card_y1 + 74]
         draw_badge(draw, badge_str, badge_rect, badge_bg, badge_text_color, font_badge)
 
 
-def draw_hardware_panel_pil(draw, tracker):
+def draw_hardware_panel_pil(draw, tracker, frame_shape=None):
     """绘制虚拟声光联动模拟看板，提供酷炫的 LED 光晕发光效果"""
-    panel_x1, panel_y1 = 250, 60
-    panel_x2, panel_y2 = 650, 150
-    
+    panel_w, panel_h = 420, 118
+    panel_x1 = 240
+    panel_x2 = panel_x1 + panel_w
+    panel_y1 = 70
+    panel_y2 = panel_y1 + panel_h
+    if frame_shape is not None:
+        height, width = frame_shape[:2]
+        radius = max(26, int(min(width, height) * 0.115))
+        card_h = 85
+        gap_to_slot = 14
+        safe_top = 76
+        slot_card_top = min(
+            max(safe_top, max(0, int(height * config["center_ratio"][1]) - radius) - gap_to_slot - card_h)
+            for config in SLOTS_CONFIG.values()
+        )
+        panel_w = min(620, max(420, int(width * 0.46)))
+        panel_x1 = (width - panel_w) // 2
+        panel_x2 = panel_x1 + panel_w
+        panel_y2 = slot_card_top - 16
+        panel_y1 = max(70, panel_y2 - panel_h)
+
     font_title = get_font(12, bold=True)
     font_text = get_font(11)
     font_voice = get_font(11, bold=True)
@@ -680,10 +700,10 @@ def draw_hardware_panel_pil(draw, tracker):
     draw.rounded_rectangle([panel_x1 + 1, panel_y1 + 1, panel_x2 - 1, panel_y2 - 1], radius=11, fill=None, outline=(255, 255, 255, 25), width=1)
     
     # 看板标题
-    draw.text((panel_x1 + 15, panel_y1 + 12), f"【设备硬件联动仿真】(当前核对: {SLOTS_CONFIG[CURRENT_PERIOD]['cn']})", font=font_title, fill=(230, 230, 230, 255))
+    draw.text((panel_x1 + 15, panel_y1 + 8), f"【设备硬件联动仿真】(当前核对: {SLOTS_CONFIG[CURRENT_PERIOD]['cn']})", font=font_title, fill=(230, 230, 230, 255))
     
     # 计算 LED 灯中心位置
-    cx_led, cy_led = panel_x1 + 35, panel_y1 + 55
+    cx_led, cy_led = panel_x1 + 35, panel_y1 + 44
     r_led = 9
     
     # 渲染 LED 模拟指示灯光晕
@@ -708,7 +728,7 @@ def draw_hardware_panel_pil(draw, tracker):
         led_text = "待机就绪 (OFF)"
         led_text_color = (160, 165, 175, 255)
         
-    draw.text((panel_x1 + 58, panel_y1 + 50), f"LED 指示灯: {led_text}", font=font_text, fill=led_text_color)
+    draw.text((panel_x1 + 58, panel_y1 + 38), f"LED 指示灯: {led_text}", font=font_text, fill=led_text_color)
     
     # 模拟蜂鸣器输出
     buzzer_text_color = (180, 185, 195, 255)
@@ -724,7 +744,7 @@ def draw_hardware_panel_pil(draw, tracker):
             buzzer_text = "持续警报 (间歇)"
             buzzer_text_color = (130, 20, 20, 255)
             
-    draw.text((panel_x1 + 15, panel_y1 + 82), f"模拟蜂鸣器: {buzzer_text}", font=font_text, fill=buzzer_text_color)
+    draw.text((panel_x1 + 15, panel_y1 + 64), f"模拟蜂鸣器: {buzzer_text}", font=font_text, fill=buzzer_text_color)
     
     # 模拟语音 TTS 播报
     voice_text = "静音"
@@ -745,8 +765,8 @@ def draw_hardware_panel_pil(draw, tracker):
         voice_text = "“检测到吞咽动作，但药量未减，请确认！”"
         voice_color = (255, 140, 0, 255)
         
-    draw.text((panel_x1 + 15, panel_y1 + 105), "语音播报文本:", font=font_text, fill=(200, 205, 215, 255))
-    draw.text((panel_x1 + 95, panel_y1 + 105), voice_text, font=font_voice, fill=voice_color)
+    draw.text((panel_x1 + 15, panel_y1 + 90), "语音播报文本:", font=font_text, fill=(200, 205, 215, 255))
+    draw.text((panel_x1 + 105, panel_y1 + 90), voice_text, font=font_voice, fill=voice_color)
 
 
 def process_frame(frame, action_label="idle", tracker=None, detector=None):
@@ -798,11 +818,11 @@ def process_frame(frame, action_label="idle", tracker=None, detector=None):
     draw_top_banner_pil(ImageDraw.Draw(img_base), tracker, action_label)
     
     # 绘制悬浮信息卡片（画在半透明覆盖层上）
-    draw_slot_overlay_pil(draw_overlay, vision_results, feedback, tracker)
+    draw_slot_overlay_pil(draw_overlay, vision_results, feedback, tracker, output.shape)
     
     # 绘制硬件联动模拟板（画在半透明覆盖层上）
     if tracker is not None:
-        draw_hardware_panel_pil(draw_overlay, tracker)
+        draw_hardware_panel_pil(draw_overlay, tracker, output.shape)
 
     # 5. 使用 PIL Alpha 混合完成融合成品图像，并还原为 OpenCV BGR 格式
     img_final = Image.alpha_composite(img_base, img_overlay).convert("RGB")

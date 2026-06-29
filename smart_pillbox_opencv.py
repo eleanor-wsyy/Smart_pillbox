@@ -579,9 +579,9 @@ def draw_slot_overlay_pil(draw, vision_results, feedback, tracker):
         cx = (x1 + x2) // 2
         
         # 悬浮信息卡片尺寸与位置
-        card_w, card_h = 180, 85
+        card_w, card_h = 180, 74
         cx_card = cx
-        cy_card = y1 - 40  # 向上偏移悬浮
+        cy_card = y1 + 18  # 向上偏移悬浮
         
         card_x1 = cx_card - card_w // 2
         card_y1 = cy_card - card_h // 2
@@ -660,14 +660,14 @@ def draw_slot_overlay_pil(draw, vision_results, feedback, tracker):
         draw.text((card_x1 + 12, card_y1 + 32), info_str, font=font_text, fill=info_color)
         
         # 绘制状态圆角徽章
-        badge_rect = [card_x1 + 12, card_y1 + 54, card_x2 - 12, card_y1 + 74]
+        badge_rect = [card_x1 + 12, card_y1 + 48, card_x2 - 12, card_y1 + 66]
         draw_badge(draw, badge_str, badge_rect, badge_bg, badge_text_color, font_badge)
 
 
 def draw_hardware_panel_pil(draw, tracker):
     """绘制虚拟声光联动模拟看板，提供酷炫的 LED 光晕发光效果"""
-    panel_x1, panel_y1 = 280, 75
-    panel_x2, panel_y2 = 620, 195
+    panel_x1, panel_y1 = 250, 60
+    panel_x2, panel_y2 = 650, 150
     
     font_title = get_font(12, bold=True)
     font_text = get_font(11)

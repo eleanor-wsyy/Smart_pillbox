@@ -901,6 +901,39 @@ def print_intro(use_camera):
     print("==================================================")
 
 
+def open_camera(camera_index, backend_preference="auto"):
+    """打开摄像头并预读一帧，Windows 下优先避开容易报错的 MSMF 后端。"""
+    backend_map = {
+        "dshow": ("DirectShow", cv2.CAP_DSHOW),
+        "msmf": ("MSMF", cv2.CAP_MSMF),
+        "default": ("系统默认", cv2.CAP_ANY),
+    }
+
+    if backend_preference == "auto":
+        if os.name == "nt":
+            candidates = [backend_map["dshow"], backend_map["msmf"], backend_map["default"]]
+        else:
+            candidates = [backend_map["default"]]
+    else:
+        candidates = [backend_map[backend_preference]]
+
+    for backend_name, backend_flag in candidates:
+        cap = cv2.VideoCapture(camera_index, backend_flag)
+        if not cap.isOpened():
+            cap.release()
+            continue
+
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            print(f"摄像头已打开：index={camera_index}, backend={backend_name}")
+            return cap, backend_name
+
+        print(f"摄像头后端 {backend_name} 已打开但读取失败，尝试下一个后端。")
+        cap.release()
+
+    return None, None
+
+
 def handle_keypress(key, slot_states, current_action):
     global CURRENT_PERIOD
     if key == ord("q"):
@@ -972,6 +1005,12 @@ def save_demo_snapshot(path):
 def parse_args():
     parser = argparse.ArgumentParser(description="Memory Echo Pillbox OpenCV prototype V3.2")
     parser.add_argument("--camera-index", type=int, default=0, help="摄像头编号，默认 0")
+    parser.add_argument(
+        "--camera-backend",
+        choices=("auto", "dshow", "msmf", "default"),
+        default="auto",
+        help="摄像头后端：Windows 推荐 auto/dshow；MSMF 报错时可显式使用 dshow",
+    )
     parser.add_argument("--no-camera", action="store_true", help="强制使用模拟器")
     parser.add_argument("--snapshot", type=str, help="保存一张模拟器识别结果截图后退出")
     return parser.parse_args()
@@ -994,8 +1033,8 @@ def main():
     cap = None
     use_camera = False
     if not args.no_camera:
-        cap = cv2.VideoCapture(args.camera_index)
-        use_camera = cap.isOpened()
+        cap, _ = open_camera(args.camera_index, args.camera_backend)
+        use_camera = cap is not None and cap.isOpened()
 
     print_intro(use_camera)
 

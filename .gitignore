@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.py[cod]
+outputs/
+runs/
+*.pt
+*.onnx
+*.engine
+*.log
+.env

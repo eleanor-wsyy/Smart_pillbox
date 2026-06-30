@@ -942,9 +942,8 @@ def draw_hardware_panel_pil(draw, tracker, frame_shape=None):
         panel_y2 = slot_card_top - 16
         panel_y1 = max(70, panel_y2 - panel_h)
 
-    font_title = get_font(12, bold=True)
     font_text = get_font(11)
-    font_voice = get_font(11, bold=True)
+    panel_height = panel_y2 - panel_y1
 
     # 1. 绘制半透明磨砂效果面板背景（半透明深色填充 + 极细白色高光描边）
     draw.rounded_rectangle([panel_x1, panel_y1, panel_x2, panel_y2], radius=12, fill=(24, 28, 36, 170), outline=(255, 255, 255, 40), width=1)
@@ -952,87 +951,86 @@ def draw_hardware_panel_pil(draw, tracker, frame_shape=None):
     # 2. 内圈白色软微光描边，提升卡片边缘的通透感
     draw.rounded_rectangle([panel_x1 + 1, panel_y1 + 1, panel_x2 - 1, panel_y2 - 1], radius=11, fill=None, outline=(255, 255, 255, 25), width=1)
     
-    # 看板标题（UI 精简文案，不影响 tracker 状态）
-    draw.text((panel_x1 + 15, panel_y1 + 8), f"[硬件仿真] 核对: {SLOTS_CONFIG[CURRENT_PERIOD]['cn']}", font=font_title, fill=(230, 230, 230, 255))
-    
     # 计算 LED 灯中心位置
-    cx_led, cy_led = panel_x1 + 35, panel_y1 + 44
+    cx_led, cy_led = panel_x1 + 35, panel_y1 + panel_height // 2
     r_led = 9
-    
-    # 渲染 LED 模拟指示灯光晕
+
+    # 渲染 LED 模拟指示灯光晕（仅视觉，不影响 tracker）
     if tracker.led_status == "GREEN":
         draw_glow_led(draw, cx_led, cy_led, r_led, (80, 240, 120, 255), (40, 120, 60, 140), (20, 60, 30, 60))
-        led_text = "正常服药确认 (GREEN)"
-        led_text_color = (80, 240, 120, 255)
     elif tracker.led_status == "YELLOW":
         draw_glow_led(draw, cx_led, cy_led, r_led, (255, 210, 0, 255), (130, 105, 0, 140), (65, 50, 0, 60))
-        led_text = "药格变空待吞咽 (YELLOW)"
-        led_text_color = (255, 210, 0, 255)
     elif tracker.led_status == "RED":
         if int(time.time() * 2) % 2 == 0:
             draw_glow_led(draw, cx_led, cy_led, r_led, (255, 40, 40, 255), (130, 20, 20, 140), (65, 10, 10, 60))
-            led_text = "警报闪烁中 (RED)"
         else:
             draw_glow_led(draw, cx_led, cy_led, r_led, (80, 20, 20, 255), (40, 10, 10, 100), (30, 5, 5, 50))
-            led_text = "警报闪烁中 (OFF)"
-        led_text_color = (255, 40, 40, 255)
     else:
         draw_glow_led(draw, cx_led, cy_led, r_led, (100, 100, 100, 255), (60, 60, 60, 100), (40, 40, 40, 50))
-        led_text = "待机就绪 (OFF)"
-        led_text_color = (160, 165, 175, 255)
         
-    led_display = led_text.replace("警报闪烁中", "警报闪烁").replace("正常服药确认", "正常确认").replace("药格变空待吞咽", "变空待吞").replace("待机就绪", "待机")
-    draw.text((panel_x1 + 58, panel_y1 + 38), f"LED: {led_display}", font=font_text, fill=led_text_color)
-    
-    # 模拟蜂鸣器输出
-    buzzer_text_color = (180, 185, 195, 255)
-    buzzer_text = "静音"
-    if tracker.buzzer_status == "SHORT_BEEP":
-        buzzer_text = "短鸣“滴~” (服药确认)"
-        buzzer_text_color = (80, 240, 120, 255)
-    elif tracker.buzzer_status == "ALARM":
-        if int(time.time() * 4) % 2 == 0:
-            buzzer_text = "持续警报“哔! 哔! 哔!”"
-            buzzer_text_color = (255, 40, 40, 255)
+    # UI 单行状态文案（仅渲染层，不修改 tracker）
+    period_cn = SLOTS_CONFIG[CURRENT_PERIOD]["cn"]
+    title_seg = f"[仿真] {period_cn}"
+    if tracker.led_status == "GREEN":
+        led_seg = "🟢 正常"
+    elif tracker.led_status == "YELLOW":
+        led_seg = "🟡 待吞"
+    elif tracker.led_status == "RED":
+        led_seg = "🔴 警报"
+    else:
+        led_seg = "⚪ 待机"
+
+    voice_seg = "🔊 静音"
+    line_color = (200, 205, 215, 255)
+    if tracker.voice_status == "NORMAL_CONFIRMED":
+        voice_seg = "🔊 已确认"
+        line_color = (80, 240, 120, 255)
+    elif tracker.voice_status == "DOSAGE_ERROR":
+        voice_seg = "🔊 剂量错"
+        line_color = (255, 140, 0, 255)
+    elif tracker.voice_status == "WRONG_SLOT":
+        voice_seg = "🔊 拿错药格!"
+        line_color = (255, 40, 40, 255)
+    elif tracker.voice_status == "URGENT_CONFIRM":
+        voice_seg = "🔊 请服药"
+        line_color = (255, 210, 0, 255)
+    elif tracker.voice_status == "SWALLOW_BUT_FULL":
+        voice_seg = "🔊 药量未减"
+        line_color = (255, 140, 0, 255)
+    elif tracker.led_status == "GREEN":
+        line_color = (80, 240, 120, 255)
+    elif tracker.led_status == "YELLOW":
+        line_color = (255, 210, 0, 255)
+    elif tracker.led_status == "RED":
+        line_color = (255, 40, 40, 255)
+
+    status_line = f"{title_seg} | {led_seg} | {voice_seg}".replace("\n", " ")
+    max_text_width = panel_w - 70
+    while len(status_line) > 8:
+        try:
+            bbox = draw.textbbox((0, 0), status_line, font=font_text)
+            text_width = bbox[2] - bbox[0]
+        except AttributeError:
+            text_width, _ = draw.textsize(status_line, font=font_text)
+        if text_width <= max_text_width:
+            break
+        if len(voice_seg) > 4:
+            voice_seg = voice_seg[:-1]
         else:
-            buzzer_text = "持续警报 (间歇)"
-            buzzer_text_color = (130, 20, 20, 255)
-            
-    draw.text((panel_x1 + 15, panel_y1 + 64), f"模拟蜂鸣器: {buzzer_text}", font=font_text, fill=buzzer_text_color)
-    
-    # 模拟语音 TTS 播报
-    voice_text = "静音"
-    voice_color = (160, 165, 175, 255)
-    if tracker.voice_status == "NORMAL_CONFIRMED":
-        voice_text = "“服药已确认，打卡成功！”"
-        voice_color = (80, 240, 120, 255)
-    elif tracker.voice_status == "DOSAGE_ERROR":
-        voice_text = "“剂量错误，请核对药量！”"
-        voice_color = (255, 140, 0, 255)
-    elif tracker.voice_status == "WRONG_SLOT":
-        voice_text = f"“拿错药格，当前为{SLOTS_CONFIG[CURRENT_PERIOD]['cn']}时段！”"
-        voice_color = (255, 40, 40, 255)
-    elif tracker.voice_status == "URGENT_CONFIRM":
-        voice_text = "“请尽快服药并完成吞咽！”"
-        voice_color = (255, 210, 0, 255)
-    elif tracker.voice_status == "SWALLOW_BUT_FULL":
-        voice_text = "“检测到吞咽动作，但药量未减，请确认！”"
-        voice_color = (255, 140, 0, 255)
-        
-    voice_display = voice_text.replace("\n", " ").strip()
-    if tracker.voice_status == "NORMAL_CONFIRMED":
-        voice_display = "“服药已确认！”"
-    elif tracker.voice_status == "DOSAGE_ERROR":
-        voice_display = "“剂量错误！”"
-    elif tracker.voice_status == "WRONG_SLOT":
-        voice_display = f"“拿错药格！当前是{SLOTS_CONFIG[CURRENT_PERIOD]['cn']}”"
-    elif tracker.voice_status == "URGENT_CONFIRM":
-        voice_display = "“请尽快服药！”"
-    elif tracker.voice_status == "SWALLOW_BUT_FULL":
-        voice_display = "“已吞咽但药量未减！”"
-    if len(voice_display) > 20:
-        voice_display = voice_display[:20] + "..."
-    draw.text((panel_x1 + 15, panel_y1 + 90), f"🔊 播报: {voice_display}", font=font_voice, fill=voice_color)
+            status_line = status_line[: max(0, len(status_line) - 4)] + "..."
+            break
+        status_line = f"{title_seg} | {led_seg} | {voice_seg}".replace("\n", " ")
+
+    text_x = panel_x1 + 58
+    try:
+        bbox = draw.textbbox((0, 0), status_line, font=font_text)
+        text_height = bbox[3] - bbox[1]
+        offset_y = bbox[1]
+    except AttributeError:
+        _, text_height = draw.textsize(status_line, font=font_text)
+        offset_y = 0
+    text_y = panel_y1 + (panel_height - text_height) // 2 - offset_y
+    draw.text((text_x, text_y), status_line, font=font_text, fill=line_color)
 
 
 def process_frame(frame, action_label="idle", tracker=None, detector=None):

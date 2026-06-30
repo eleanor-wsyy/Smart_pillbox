@@ -952,8 +952,8 @@ def draw_hardware_panel_pil(draw, tracker, frame_shape=None):
     # 2. 内圈白色软微光描边，提升卡片边缘的通透感
     draw.rounded_rectangle([panel_x1 + 1, panel_y1 + 1, panel_x2 - 1, panel_y2 - 1], radius=11, fill=None, outline=(255, 255, 255, 25), width=1)
     
-    # 看板标题
-    draw.text((panel_x1 + 15, panel_y1 + 8), f"【设备硬件联动仿真】(当前核对: {SLOTS_CONFIG[CURRENT_PERIOD]['cn']})", font=font_title, fill=(230, 230, 230, 255))
+    # 看板标题（UI 精简文案，不影响 tracker 状态）
+    draw.text((panel_x1 + 15, panel_y1 + 8), f"[硬件仿真] 核对: {SLOTS_CONFIG[CURRENT_PERIOD]['cn']}", font=font_title, fill=(230, 230, 230, 255))
     
     # 计算 LED 灯中心位置
     cx_led, cy_led = panel_x1 + 35, panel_y1 + 44
@@ -981,7 +981,8 @@ def draw_hardware_panel_pil(draw, tracker, frame_shape=None):
         led_text = "待机就绪 (OFF)"
         led_text_color = (160, 165, 175, 255)
         
-    draw.text((panel_x1 + 58, panel_y1 + 38), f"LED 指示灯: {led_text}", font=font_text, fill=led_text_color)
+    led_display = led_text.replace("警报闪烁中", "警报闪烁").replace("正常服药确认", "正常确认").replace("药格变空待吞咽", "变空待吞").replace("待机就绪", "待机")
+    draw.text((panel_x1 + 58, panel_y1 + 38), f"LED: {led_display}", font=font_text, fill=led_text_color)
     
     # 模拟蜂鸣器输出
     buzzer_text_color = (180, 185, 195, 255)
@@ -1018,8 +1019,20 @@ def draw_hardware_panel_pil(draw, tracker, frame_shape=None):
         voice_text = "“检测到吞咽动作，但药量未减，请确认！”"
         voice_color = (255, 140, 0, 255)
         
-    draw.text((panel_x1 + 15, panel_y1 + 90), "语音播报文本:", font=font_text, fill=(200, 205, 215, 255))
-    draw.text((panel_x1 + 105, panel_y1 + 90), voice_text, font=font_voice, fill=voice_color)
+    voice_display = voice_text.replace("\n", " ").strip()
+    if tracker.voice_status == "NORMAL_CONFIRMED":
+        voice_display = "“服药已确认！”"
+    elif tracker.voice_status == "DOSAGE_ERROR":
+        voice_display = "“剂量错误！”"
+    elif tracker.voice_status == "WRONG_SLOT":
+        voice_display = f"“拿错药格！当前是{SLOTS_CONFIG[CURRENT_PERIOD]['cn']}”"
+    elif tracker.voice_status == "URGENT_CONFIRM":
+        voice_display = "“请尽快服药！”"
+    elif tracker.voice_status == "SWALLOW_BUT_FULL":
+        voice_display = "“已吞咽但药量未减！”"
+    if len(voice_display) > 20:
+        voice_display = voice_display[:20] + "..."
+    draw.text((panel_x1 + 15, panel_y1 + 90), f"🔊 播报: {voice_display}", font=font_voice, fill=voice_color)
 
 
 def process_frame(frame, action_label="idle", tracker=None, detector=None):

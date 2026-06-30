@@ -1,5 +1,5 @@
 numpy
 opencv-python
 pillow
-requests
+inference-sdk
 ultralytics

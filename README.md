@@ -163,3 +163,24 @@ Python OpenCV / YOLO smart pillbox backend
 ```
 
 The current frontend is a visual and interaction prototype. It does not yet call the Python camera program directly.
+
+## Roboflow SDK Integration Note
+
+The Roboflow detector uses the official `inference-sdk` client:
+
+```python
+from inference_sdk import InferenceHTTPClient
+
+client = InferenceHTTPClient(
+    api_url="https://serverless.roboflow.com",
+    api_key=os.getenv("ROBOFLOW_API_KEY"),
+)
+result = client.infer("YOUR_IMAGE.jpg", model_id="pill-detection-fnftd/3")
+```
+
+Do not hard-code the Roboflow API key in source code. Set it before running:
+
+```powershell
+$env:ROBOFLOW_API_KEY="your_api_key"
+python smart_pillbox_opencv.py --detector roboflow
+```

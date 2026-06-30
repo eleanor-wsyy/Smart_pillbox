@@ -1,6 +1,6 @@
 import argparse
-import base64
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -238,9 +238,9 @@ class RoboflowPillDetector:
             raise ValueError("使用 Roboflow 检测器需要设置 ROBOFLOW_API_KEY 或传入 --roboflow-api-key")
 
         try:
-            import requests
+            from inference_sdk import InferenceHTTPClient
         except ImportError as exc:
-            raise RuntimeError("使用 Roboflow 检测器需要安装 requests：pip install requests") from exc
+            raise RuntimeError("使用 Roboflow 检测器需要安装 inference-sdk：pip install inference-sdk") from exc
 
         self.api_key = api_key
         self.confidence = confidence
@@ -248,7 +248,7 @@ class RoboflowPillDetector:
         self.api_url = api_url.rstrip("/")
         self.min_interval = max(0.0, min_interval)
         self.timeout = timeout
-        self.session = requests.Session()
+        self.client = InferenceHTTPClient(api_url=self.api_url, api_key=self.api_key)
         self.fallback_detector = PillDetector()
         self.last_request_time = 0.0
         self.cached_predictions = []
@@ -276,37 +276,29 @@ class RoboflowPillDetector:
             self.last_error = "无法将当前帧编码为 JPEG"
             return None
 
-        image_b64 = base64.b64encode(encoded).decode("ascii")
-        endpoint = f"{self.api_url}/{self.MODEL_ID}"
-        params = {
-            "api_key": self.api_key,
-            "confidence": self.confidence,
-            "overlap": self.overlap,
-            "format": "json",
-            "image_type": "base64",
-            "max_detections": 100,
-            "disable_active_learning": "true",
-        }
-
+        temp_path = None
         try:
-            response = self.session.post(
-                endpoint,
-                params=params,
-                data=image_b64,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            payload = response.json()
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp_file:
+                temp_path = temp_file.name
+                temp_file.write(encoded.tobytes())
+
+            payload = self.client.infer(temp_path, model_id=self.MODEL_ID)
         except Exception as exc:
             self.last_error = str(exc)
             print(f"[WARNING] Roboflow 推理失败，已回退到本地 OpenCV 检测：{self.last_error}")
             return None
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
         predictions = payload.get("predictions", [])
         self.cached_predictions = [
             p for p in predictions
             if str(p.get("class", "")).lower() in self.MODEL_CLASSES
+            and float(p.get("confidence", 0.0)) >= self.confidence
         ]
         self.last_request_time = now
         self.last_error = None

@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 # ==========================================
-# 阿尔茨海默症长者“记忆回音药盒”视觉识别原型 V3.2
+# 阿尔茨海默症长者“记忆回音药盒”视觉识别原型 V4.0
 # ==========================================
 # 信号链：
 # 1. PillDetector 视觉类：提取固定药盒 ROI 中药丸的颜色特征和数量（为接入 YOLO/FOMO 深度学习解耦）。
@@ -84,11 +84,14 @@ ACTION_LABELS = {
     },
 }
 
-WINDOW_NAME = "Memory Echo Pillbox - Vision Prototype V3.2"
+WINDOW_NAME = "Memory Echo Pillbox - Vision Prototype V4.0"
 PRESENT_RATIO_THRESHOLD = 0.075
 WARNING_DELAY = 5.0
 SWALLOW_ON_TIME_LIMIT = 4.5
 CRITICAL_DELAY = WARNING_DELAY * 2
+HAND_TO_MOUTH_WINDOW = 8.0
+DETECTION_CONFIDENCE_THRESHOLD = 0.28
+RECOVERY_DISPLAY_SECONDS = 2.5
 
 # V3.0：当前服药时间段上下文全局变量
 CURRENT_PERIOD = "Morning"
@@ -460,7 +463,7 @@ class LocalYoloPillDetector:
 
 
 class MedicationTracker:
-    """核心业务逻辑类：管理防错药时段拦截、处方用量校验、双向时间窗口吞咽确认以及虚拟硬件联动状态"""
+    """V4 安全状态机：防错药、剂量核对、动作闭环、低置信度暂停判定与恢复。"""
     def __init__(self, slot_keys):
         self.previous_present = {key: True for key in slot_keys}
         self.pending_since = {key: None for key in slot_keys}
@@ -474,6 +477,7 @@ class MedicationTracker:
         
         # V3.0 双向时间窗口与用量校验所增加的参数
         self.last_swallow_time = 0.0
+        self.last_hand_to_mouth_time = 0.0
         self.last_consumed_swallow = {key: 0.0 for key in slot_keys}
         self.last_pill_count = {key: 0 for key in slot_keys}
         
@@ -481,6 +485,10 @@ class MedicationTracker:
         self.wrong_period_alarm = {key: False for key in slot_keys}
         self.last_frame_pill_count = {key: 0 for key in slot_keys}
         self.last_period = CURRENT_PERIOD
+
+        # V4 状态机新增状态：视觉不确定与错误恢复提示
+        self.system_state = "MONITORING"
+        self.recovery_until = {key: 0.0 for key in slot_keys}
         
         # V3.0 虚拟硬件联动看板的状态
         self.led_status = "OFF"
@@ -500,6 +508,8 @@ class MedicationTracker:
             self.last_period = CURRENT_PERIOD
         
         # 识别最近一次吞咽时间
+        if action_label == "hand_to_mouth":
+            self.last_hand_to_mouth_time = now
         if action_label == "swallow":
             self.last_swallow_time = now
         swallowed_now = (action_label == "swallow")
@@ -510,6 +520,7 @@ class MedicationTracker:
 
             # 判断是否从药盒中拿取了药物：当前帧药丸数少于上一帧，且上一帧有药
             pill_decreased = (self.last_frame_pill_count[key] > 0 and result.pill_count < self.last_frame_pill_count[key])
+            uncertain = self._is_uncertain(result)
 
             if key != CURRENT_PERIOD:
                 # 1. 拿错时间段逻辑拦截：只要药丸数减少或者变空，立刻拉响警报
@@ -524,12 +535,17 @@ class MedicationTracker:
                 if result.present and result.pill_count >= expected:
                     if self.wrong_period_alarm[key]:
                         self.wrong_period_alarm[key] = False
+                        self.recovery_until[key] = now + RECOVERY_DISPLAY_SECONDS
                         events.append(f"[INFO] {SLOTS_CONFIG[key]['cn']} 药格错药警报消除：药丸已放回。")
                         status_event_emitted = True
 
                 # 根据报警状态映射反馈
                 if self.wrong_period_alarm[key]:
                     feedback = SlotFeedback("critical", f"WRONG PERIOD! (CURRENT: {CURRENT_PERIOD})", (40, 40, 255))
+                elif self.recovery_until[key] > now:
+                    feedback = SlotFeedback("recovery", "RECOVERY: PILLS RETURNED", (80, 240, 120))
+                elif uncertain:
+                    feedback = SlotFeedback("uncertain", "UNCERTAIN: ADJUST CAMERA", (0, 210, 255))
                 else:
                     if result.present:
                         self.last_pill_count[key] = result.pill_count  # 暂存当前药丸数
@@ -543,8 +559,12 @@ class MedicationTracker:
             else:
                 # 2. 拿对时间段逻辑
                 self.wrong_period_alarm[key] = False
-                
-                if result.present:
+
+                if self.recovery_until[key] > now:
+                    feedback = SlotFeedback("recovery", "RECOVERY: BACK TO MONITOR", (80, 240, 120))
+                elif uncertain:
+                    feedback = SlotFeedback("uncertain", "UNCERTAIN: ADJUST CAMERA", (0, 210, 255))
+                elif result.present:
                     # 重新装药，复位此药格所有状态
                     self.pending_since[key] = None
                     self.confirmed[key] = False
@@ -560,32 +580,23 @@ class MedicationTracker:
                     if became_empty:
                         # 检查“变空前窗口 (5.0s)”是否有未消费的吞咽动作
                         if self.last_swallow_time > self.last_consumed_swallow[key] and (now - self.last_swallow_time <= 5.0):
-                            self.confirmed[key] = True
-                            self.pending_since[key] = None
-                            self.last_consumed_swallow[key] = self.last_swallow_time
-                            
-                            actual_taken = self.last_pill_count[key]
-                            expected = MEDICATION_PLAN[key]["expected_count"]
-                            
-                            if actual_taken == expected:
-                                feedback = SlotFeedback("confirmed", "CONFIRMED: TAKEN", (80, 240, 120))
-                                self.streak_count += 1
-                                self.slow_swallow_count = 0
-                                swallow_duration = now - self.last_swallow_time
-                                events.append(
-                                    self._format_event(
-                                        key,
-                                        "confirmed_early",
-                                        swallow_duration=swallow_duration,
-                                        streak_count=self.streak_count,
-                                    )
+                            if self._has_recent_hand_to_mouth(now):
+                                feedback = self._confirm_or_warn_dosage(
+                                    key,
+                                    now,
+                                    now - self.last_swallow_time,
+                                    "confirmed_early",
+                                    events,
                                 )
-                                if self.streak_count % 3 == 0:
-                                    events.append(self._format_event(key, "reward", streak_count=self.streak_count))
+                                self.pending_since[key] = None
+                                self.last_consumed_swallow[key] = self.last_swallow_time
                             else:
-                                feedback = SlotFeedback("warning", f"DOSAGE ERROR: TAKEN {actual_taken}", (0, 102, 255))
+                                self.pending_since[key] = now
                                 self.streak_count = 0
-                                events.append(f"[WARNING] 服药数量异常！预期 {expected} 颗，视觉检出 {actual_taken} 颗。")
+                                feedback = SlotFeedback("warning", "WAITING HAND ACTION", (60, 220, 255))
+                                events.append(
+                                    f"[WARNING] {SLOTS_CONFIG[key]['cn']}药格已空并检测到吞咽，但未检测到 hand_to_mouth，暂不记录成功。"
+                                )
                             status_event_emitted = True
                         else:
                             self.pending_since[key] = now
@@ -604,45 +615,22 @@ class MedicationTracker:
                             pass
                         elif swallowed_now and self.pending_since[key] is not None:
                             swallow_duration = now - self.pending_since[key]
-                            self.confirmed[key] = True
-                            self.pending_since[key] = None
-                            self.last_consumed_swallow[key] = self.last_swallow_time
-                            
-                            actual_taken = self.last_pill_count[key]
-                            expected = MEDICATION_PLAN[key]["expected_count"]
-                            
-                            if actual_taken == expected:
-                                feedback = SlotFeedback("confirmed", "CONFIRMED: TAKEN", (80, 240, 120))
-                                if swallow_duration <= SWALLOW_ON_TIME_LIMIT:
-                                    self.streak_count += 1
-                                    self.slow_swallow_count = 0
-                                    events.append(
-                                        self._format_event(
-                                            key,
-                                            "confirmed",
-                                            swallow_duration=swallow_duration,
-                                            streak_count=self.streak_count,
-                                        )
-                                    )
-                                    if self.streak_count % 3 == 0:
-                                        events.append(self._format_event(key, "reward", streak_count=self.streak_count))
-                                else:
-                                    self.streak_count = 0
-                                    self.slow_swallow_count += 1
-                                    events.append(self._format_event(key, "confirmed_slow", swallow_duration=swallow_duration))
-                                    if self.slow_swallow_count >= 2:
-                                        events.append(
-                                            self._format_event(
-                                                key,
-                                                "medical",
-                                                swallow_duration=swallow_duration,
-                                                slow_count=self.slow_swallow_count,
-                                            )
-                                        )
+                            if self._has_recent_hand_to_mouth(now):
+                                feedback = self._confirm_or_warn_dosage(
+                                    key,
+                                    now,
+                                    swallow_duration,
+                                    "confirmed",
+                                    events,
+                                )
+                                self.pending_since[key] = None
+                                self.last_consumed_swallow[key] = self.last_swallow_time
                             else:
-                                feedback = SlotFeedback("warning", f"DOSAGE ERROR: TAKEN {actual_taken}", (0, 102, 255))
                                 self.streak_count = 0
-                                events.append(f"[WARNING] 服药数量异常！预期 {expected} 颗，视觉检出 {actual_taken} 颗。")
+                                feedback = SlotFeedback("warning", "WAITING HAND ACTION", (60, 220, 255))
+                                events.append(
+                                    f"[WARNING] {SLOTS_CONFIG[key]['cn']}检测到吞咽，但缺少 hand_to_mouth 前置动作，暂不记录成功。"
+                                )
                             status_event_emitted = True
                         else:
                             # 没检测到吞咽，根据超时状态变色
@@ -675,13 +663,75 @@ class MedicationTracker:
         self.update_hardware_state(now)
         return self.feedback, events
 
+    def _is_uncertain(self, result):
+        """只对检测到药丸但置信度偏低的画面暂停判定，避免把空药格误报为不确定。"""
+        return result.present and 0.0 < result.confidence < DETECTION_CONFIDENCE_THRESHOLD
+
+    def _has_recent_hand_to_mouth(self, now):
+        return now - self.last_hand_to_mouth_time <= HAND_TO_MOUTH_WINDOW
+
+    def _confirm_or_warn_dosage(self, key, now, swallow_duration, event_status, events):
+        actual_taken = self.last_pill_count[key]
+        expected = MEDICATION_PLAN[key]["expected_count"]
+
+        if actual_taken != expected:
+            self.confirmed[key] = False
+            self.streak_count = 0
+            events.append(f"[WARNING] 服药数量异常！预期 {expected} 颗，视觉检出 {actual_taken} 颗。")
+            return SlotFeedback("warning", f"DOSAGE ERROR: TAKEN {actual_taken}", (0, 102, 255))
+
+        self.confirmed[key] = True
+        if event_status == "confirmed_early":
+            self.streak_count += 1
+            self.slow_swallow_count = 0
+            events.append(
+                self._format_event(
+                    key,
+                    "confirmed_early",
+                    swallow_duration=swallow_duration,
+                    streak_count=self.streak_count,
+                )
+            )
+        elif swallow_duration <= SWALLOW_ON_TIME_LIMIT:
+            self.streak_count += 1
+            self.slow_swallow_count = 0
+            events.append(
+                self._format_event(
+                    key,
+                    "confirmed",
+                    swallow_duration=swallow_duration,
+                    streak_count=self.streak_count,
+                )
+            )
+        else:
+            self.streak_count = 0
+            self.slow_swallow_count += 1
+            events.append(self._format_event(key, "confirmed_slow", swallow_duration=swallow_duration))
+            if self.slow_swallow_count >= 2:
+                events.append(
+                    self._format_event(
+                        key,
+                        "medical",
+                        swallow_duration=swallow_duration,
+                        slow_count=self.slow_swallow_count,
+                    )
+                )
+
+        if self.streak_count > 0 and self.streak_count % 3 == 0:
+            events.append(self._format_event(key, "reward", streak_count=self.streak_count))
+
+        return SlotFeedback("confirmed", "CONFIRMED: TAKEN", (80, 240, 120))
+
     def update_hardware_state(self, now):
         """根据当前药格与日志状态，计算声光报警器的模拟输出指标"""
         self.led_status = "OFF"
         self.buzzer_status = "OFF"
         self.voice_status = "OFF"
+        self.system_state = "MONITORING"
 
         has_critical = any(fb.status == "critical" for fb in self.feedback.values()) or any(self.wrong_period_alarm.values())
+        has_uncertain = any(fb.status == "uncertain" for fb in self.feedback.values())
+        has_recovery = any(fb.status == "recovery" for fb in self.feedback.values())
         
         has_warning_dosage = False
         for key, fb in self.feedback.items():
@@ -692,6 +742,7 @@ class MedicationTracker:
         has_waiting = any(fb.status in ("waiting", "warning") for fb in self.feedback.values())
 
         if has_critical:
+            self.system_state = "LOCKED_WRONG_SLOT" if any(self.wrong_period_alarm.values()) else "REMINDER"
             self.led_status = "RED"
             self.buzzer_status = "ALARM"
             # 优先提示拿错时段
@@ -700,14 +751,27 @@ class MedicationTracker:
             else:
                 self.voice_status = "URGENT_CONFIRM"
         elif has_warning_dosage:
+            self.system_state = "WARNING_DOSAGE"
             self.led_status = "RED"
             self.buzzer_status = "ALARM"
             self.voice_status = "DOSAGE_ERROR"
+        elif has_uncertain:
+            self.system_state = "UNCERTAIN"
+            self.led_status = "YELLOW"
+            self.buzzer_status = "OFF"
+            self.voice_status = "ADJUST_CAMERA"
+        elif has_recovery:
+            self.system_state = "RECOVERY"
+            self.led_status = "GREEN"
+            self.buzzer_status = "SHORT_BEEP"
+            self.voice_status = "RECOVERY_OK"
         elif has_confirmed:
+            self.system_state = "NORMAL_SUCCESS"
             self.led_status = "GREEN"
             self.buzzer_status = "SHORT_BEEP"
             self.voice_status = "NORMAL_CONFIRMED"
         elif has_waiting:
+            self.system_state = "NORMAL_IN_PROGRESS"
             self.led_status = "YELLOW"
             self.buzzer_status = "OFF"
             self.voice_status = "OFF"
@@ -800,7 +864,7 @@ def draw_top_banner_pil(draw, tracker, action_label):
     draw.line([0, 64, 900, 64], fill=(80, 85, 95, 255), width=1)
     
     # 左侧系统名称
-    draw.text((20, 13), "记忆回音 · 阿尔茨海默症辅助服药系统 V3.2", font=font_title, fill=(255, 255, 255, 255))
+    draw.text((20, 13), "记忆回音 · 阿尔茨海默症辅助服药系统 V4.0", font=font_title, fill=(255, 255, 255, 255))
     draw.text((20, 36), "Memory Echo Smart Pillbox Monitor", font=font_sub, fill=(150, 155, 165, 255))
     
     # 右侧动作监测状态与连续打卡天数
@@ -867,11 +931,24 @@ def draw_slot_overlay_pil(draw, vision_results, feedback, tracker, frame_shape=N
                 border_color = (255, 100, 0)  # 橙色
                 badge_bg = (230, 80, 10, 255)
                 badge_str = "服药数量异常！"
+            elif "HAND ACTION" in status_text:
+                border_color = (255, 210, 0)  # 黄色
+                badge_bg = (210, 170, 0, 255)
+                badge_text_color = (30, 30, 30, 255)
+                badge_str = "缺少送药入口动作"
             else:
                 border_color = (255, 210, 0)  # 黄色
                 badge_bg = (210, 170, 0, 255)
                 badge_text_color = (30, 30, 30, 255)
                 badge_str = "未检测到吞咽 · 语音催促"
+        elif status == "uncertain":
+            border_color = (0, 210, 255)
+            badge_bg = (0, 150, 210, 255)
+            badge_str = "视觉不确定 · 请调整画面"
+        elif status == "recovery":
+            border_color = (80, 240, 120)
+            badge_bg = (40, 180, 80, 255)
+            badge_str = "已恢复监控"
         elif status == "confirmed":
             border_color = (80, 240, 120)  # 绿色
             badge_bg = (40, 180, 80, 255)
@@ -997,6 +1074,12 @@ def draw_hardware_panel_pil(draw, tracker, frame_shape=None):
     elif tracker.voice_status == "SWALLOW_BUT_FULL":
         voice_seg = "🔊 药量未减"
         line_color = (255, 140, 0, 255)
+    elif tracker.voice_status == "ADJUST_CAMERA":
+        voice_seg = "🔊 调整画面"
+        line_color = (0, 210, 255, 255)
+    elif tracker.voice_status == "RECOVERY_OK":
+        voice_seg = "🔊 已恢复"
+        line_color = (80, 240, 120, 255)
     elif tracker.led_status == "GREEN":
         line_color = (80, 240, 120, 255)
     elif tracker.led_status == "YELLOW":
@@ -1172,9 +1255,9 @@ def draw_person_and_action(img, action_label):
 
 def print_intro(use_camera):
     print("==================================================")
-    print(" 阿尔茨海默症长者“记忆回音药盒”视觉识别原型 V3.2")
+    print(" 阿尔茨海默症长者“记忆回音药盒”视觉识别原型 V4.0")
     print("==================================================")
-    print("视觉任务：药格空置与数量核对 + 服药动作分类 + 时间段与剂量校验")
+    print("视觉任务：Roboflow YOLO 药丸检测 + OpenCV 药格映射 + V4 安全状态机")
     print("按键说明：")
     print("  r     : 循环切换“早上(Morning)”药格药片数 (0->1->2->3->0)")
     print("  g     : 循环切换“中午(Noon)”药格药片数")
@@ -1260,6 +1343,23 @@ def handle_keypress(key, slot_states, current_action):
 
 
 def create_detector_from_args(args):
+    if args.detector == "auto":
+        if args.roboflow_api_key:
+            try:
+                detector = RoboflowPillDetector(
+                    api_key=args.roboflow_api_key,
+                    confidence=args.roboflow_confidence,
+                    overlap=args.roboflow_overlap,
+                )
+                print("检测后端：Roboflow pill-detection-fnftd/3（推荐主方案）")
+                return detector
+            except Exception as exc:
+                print(f"[WARNING] Roboflow 初始化失败，回退到本地 OpenCV：{exc}")
+        else:
+            print("[INFO] 未设置 ROBOFLOW_API_KEY，自动使用本地 OpenCV 模拟检测。")
+        print("检测后端：本地 OpenCV 颜色/轮廓检测")
+        return PillDetector()
+
     if args.detector == "yolo":
         detector = LocalYoloPillDetector(
             model_path=args.yolo_model,
@@ -1315,7 +1415,7 @@ def save_demo_snapshot(path, detector=None):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Memory Echo Pillbox OpenCV prototype V3.2")
+    parser = argparse.ArgumentParser(description="Memory Echo Pillbox YOLO/OpenCV prototype V4.0")
     parser.add_argument("--camera-index", type=int, default=0, help="摄像头编号，默认 0")
     parser.add_argument(
         "--camera-backend",
@@ -1328,9 +1428,9 @@ def parse_args():
     parser.add_argument("--snapshot", type=str, help="保存一张模拟器识别结果截图后退出")
     parser.add_argument(
         "--detector",
-        choices=("opencv", "yolo", "roboflow"),
-        default="opencv",
-        help="药丸检测后端：opencv 为本地颜色/轮廓检测，yolo 为电脑端本地 YOLO，roboflow 为云端 YOLOv11",
+        choices=("auto", "opencv", "yolo", "roboflow"),
+        default="auto",
+        help="药丸检测后端：auto 优先 Roboflow，缺少 API key 时回退 OpenCV；roboflow 为云端 YOLOv11",
     )
     parser.add_argument("--yolo-model", default="best.pt", help="本地 YOLO 药丸检测权重路径，例如从 Roboflow 导出的 best.pt")
     parser.add_argument("--yolo-confidence", type=float, default=0.4, help="本地 YOLO 检测置信度阈值")

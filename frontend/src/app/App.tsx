@@ -65,32 +65,47 @@ type Screen = "dashboard" | "live" | "alerts" | "history" | "settings";
 const ALERTS = [
   {
     severity: "严重", sevColor: C.red, sevBg: C.redBg, sevBorder: C.redBorder,
-    iconType: "octagon", title: "拿错药格",
-    desc: "当前是早上时段，请勿取用晚上药格",
+    iconType: "octagon", title: "错误药格锁定",
+    desc: "当前是早上时段，Roboflow 检测到晚上药格药丸移动，系统已阻断成功记录",
     time: "08:02", slot: "晚上药格",
-    action: "立即放回，确认早上药格", resolved: false,
+    action: "立即放回药丸，等待系统恢复", resolved: false,
   },
   {
     severity: "警告", sevColor: C.orange, sevBg: C.orangeBg, sevBorder: C.orangeBorder,
     iconType: "triangle", title: "剂量异常",
-    desc: "预期 2 粒，视觉检出 1 粒",
+    desc: "早上处方预期 2 粒，视觉检出 1 粒，暂不记录成功服药",
     time: "07:55", slot: "早上药格",
     action: "请检查药格，确认实际数量", resolved: false,
   },
   {
     severity: "提醒", sevColor: C.amber, sevBg: C.amberBg, sevBorder: C.amberBorder,
-    iconType: "info", title: "药格变空",
-    desc: "等待吞咽确认中",
+    iconType: "info", title: "动作闭环未完成",
+    desc: "药格变空后等待 hand_to_mouth 与 swallow 双重确认",
     time: "07:58", slot: "早上药格",
-    action: "等待 30 秒吞咽确认", resolved: false,
+    action: "提醒老人完成服药动作", resolved: false,
+  },
+  {
+    severity: "待确认", sevColor: C.amber, sevBg: C.amberBg, sevBorder: C.amberBorder,
+    iconType: "info", title: "视觉不确定",
+    desc: "检测置信度低或摄像头画面被遮挡，系统暂停成功/失败判定",
+    time: "08:04", slot: "摄像头画面",
+    action: "调整药盒位置或摄像头角度", resolved: false,
   },
   {
     severity: "已解决", sevColor: C.green, sevBg: C.greenBg, sevBorder: C.greenBorder,
-    iconType: "check", title: "中午剂量确认",
-    desc: "中午药格检测正常，1 粒已确认",
+    iconType: "check", title: "错误药格已恢复",
+    desc: "药丸已放回，系统从 RECOVERY 回到 MONITORING",
     time: "昨天 12:03", slot: "中午药格",
     action: "", resolved: true,
   },
+];
+
+const SAFETY_STATES = [
+  { key: "MONITORING", label: "监控中", color: C.teal, bg: C.tealBg },
+  { key: "LOCKED_WRONG_SLOT", label: "错误药格锁定", color: C.red, bg: C.redBg },
+  { key: "WARNING_DOSAGE", label: "剂量异常", color: C.orange, bg: C.orangeBg },
+  { key: "UNCERTAIN", label: "视觉不确定", color: C.amber, bg: C.amberBg },
+  { key: "RECOVERY", label: "恢复流程", color: C.green, bg: C.greenBg },
 ];
 
 // ─── Blob background per screen ──────────────────────────────────
@@ -321,7 +336,7 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
               <span style={{ fontSize: 13, color: "rgba(255,255,255,0.72)" }}>监护对象</span>
             </div>
             <div style={{ fontSize: 28, fontWeight: 700, color: "white", lineHeight: 1.1 }}>外婆</div>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.68)", marginTop: 5 }}>早晨服药时段</div>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.68)", marginTop: 5 }}>V4 安全状态机 · 早晨服药时段</div>
           </div>
           <div style={{
             display: "flex", alignItems: "center", gap: 6,
@@ -356,7 +371,7 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
 
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 12, color: C.fgMuted, marginBottom: 4 }}>当前状态</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.fg, marginBottom: 12 }}>待服用</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.fg, marginBottom: 12 }}>MONITORING</div>
               <div style={{
                 display: "flex", alignItems: "center", gap: 8,
                 ...GLASS_TEAL, borderRadius: 12, padding: "8px 12px",
@@ -418,6 +433,29 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
         </div>
       </div>
 
+      <div style={{ padding: "14px 16px 0" }}>
+        <SectionHeader>V4 安全状态</SectionHeader>
+        <GlassCard style={{ padding: "13px 14px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {SAFETY_STATES.map((s) => (
+              <div key={s.key} style={{
+                background: s.bg,
+                border: "1px solid rgba(255,255,255,0.65)",
+                borderRadius: 12,
+                padding: "9px 10px",
+                minHeight: 56,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                  <Dot color={s.color} pulse={s.key === "MONITORING"} />
+                  <span style={{ fontSize: 11, color: s.color, fontWeight: 700 }}>{s.key}</span>
+                </div>
+                <div style={{ fontSize: 12, color: C.fgMid, lineHeight: 1.25 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+        </GlassCard>
+      </div>
+
       {/* Alert strip */}
       <div style={{ padding: "14px 16px 0" }}>
         <GlassCard style={{ padding: "12px 14px" }}>
@@ -431,8 +469,8 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
               <CheckCircle2 size={17} color={C.green} />
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 11, color: C.fgMuted }}>最近异常</div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>暂无严重警报</div>
+              <div style={{ fontSize: 11, color: C.fgMuted }}>感知后端</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>Roboflow YOLO + OpenCV ROI</div>
             </div>
             <button onClick={() => onNav("alerts")} style={{ background: "none", border: "none", cursor: "pointer", color: C.fgMuted }}>
               <ChevronRight size={18} />
@@ -608,10 +646,10 @@ function LiveScreen() {
 
           <div style={{ position: "absolute", bottom: 18, left: 10, right: 10, display: "flex", justifyContent: "space-between" }}>
             <span style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", color: "#4ABFA0", fontSize: 9.5, fontFamily: "monospace", padding: "2px 7px", borderRadius: 4 }}>
-              YOLO v8 · local inference
+              Roboflow · pill-detection-fnftd/3
             </span>
             <span style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", color: "#6A8FA0", fontSize: 9.5, fontFamily: "monospace", padding: "2px 7px", borderRadius: 4 }}>
-              Morning · idle
+              Morning · MONITORING
             </span>
           </div>
         </div>
@@ -619,9 +657,9 @@ function LiveScreen() {
 
       {/* Status chips */}
       <div style={{ display: "flex", gap: 7, padding: "10px 16px 0", flexWrap: "wrap" }}>
-        <Chip color={C.teal} bg="rgba(234,244,243,0.8)">检测后端: YOLO</Chip>
-        <Chip color={C.fgMid} bg="rgba(242,241,238,0.8)">动作状态: idle</Chip>
-        <Chip color={C.amber} bg={C.amberBg}>当前时段: Morning</Chip>
+        <Chip color={C.teal} bg="rgba(234,244,243,0.8)">检测后端: Roboflow YOLO</Chip>
+        <Chip color={C.fgMid} bg="rgba(242,241,238,0.8)">空间映射: OpenCV ROI</Chip>
+        <Chip color={C.amber} bg={C.amberBg}>状态机: MONITORING</Chip>
       </div>
 
       {/* Detection results */}
@@ -629,9 +667,9 @@ function LiveScreen() {
         <SectionHeader>视觉检测结果</SectionHeader>
         <GlassCard>
           {[
-            { slot: "早上", type: "tablets", count: 2, conf: 0.93, ok: true },
-            { slot: "中午", type: "tablets", count: 1, conf: 0.91, ok: false },
-            { slot: "晚上", type: "capsules", count: 3, conf: 0.89, ok: false },
+            { slot: "早上", type: "tablets", count: 2, conf: 0.93, ok: true, state: "ready" },
+            { slot: "中午", type: "tablets", count: 1, conf: 0.91, ok: false, state: "not current" },
+            { slot: "晚上", type: "capsules", count: 3, conf: 0.89, ok: false, state: "not current" },
           ].map((row, i) => (
             <div key={i} style={{
               padding: "11px 16px",
@@ -653,6 +691,7 @@ function LiveScreen() {
                 <div style={{ display: "flex", gap: 10, marginTop: 3 }}>
                   <span style={{ fontSize: 12, color: C.fgMuted }}>{row.type} · {row.count} 粒</span>
                   <span style={{ fontSize: 12, fontFamily: "monospace", color: C.teal }}>conf {row.conf}</span>
+                  <span style={{ fontSize: 12, fontFamily: "monospace", color: C.fgMuted }}>{row.state}</span>
                 </div>
               </div>
             </div>
@@ -665,8 +704,9 @@ function LiveScreen() {
         <SectionHeader>事件日志</SectionHeader>
         <GlassCard style={{ padding: "4px 0" }}>
           {[
-            { time: "07:58", text: "检测到早上药格药量正确", color: C.green },
-            { time: "08:00", text: "等待服药确认", color: C.amber },
+            { time: "07:58", text: "Roboflow 检测到早上药格 tablets × 2", color: C.green },
+            { time: "08:00", text: "OpenCV ROI 映射到 Morning，等待 hand_to_mouth", color: C.amber },
+            { time: "08:01", text: "成功条件：正确药格 + 剂量匹配 + hand_to_mouth + swallow", color: C.teal },
           ].map((ev, i) => (
             <div key={i} style={{
               padding: "9px 16px",
@@ -873,9 +913,9 @@ function AlertModal({ index, onClose }: { index: number; onClose: () => void }) 
 // ─── Screen 4 · History ──────────────────────────────────────────
 
 const HISTORY_EVENTS = [
-  { time: "08:03", text: "早上服药已确认", sub: "吞咽确认成功", color: C.green, iconType: "check" },
-  { time: "08:01", text: "检测到吞咽动作", sub: "置信度 0.87", color: C.teal, iconType: "activity" },
-  { time: "08:00", text: "早上药格变空", sub: "等待吞咽确认", color: C.amber, iconType: "dot" },
+  { time: "08:03", text: "早上服药已确认", sub: "正确药格 + 剂量匹配 + hand_to_mouth + swallow", color: C.green, iconType: "check" },
+  { time: "08:01", text: "检测到 hand_to_mouth 与 swallow", sub: "动作闭环完成", color: C.teal, iconType: "activity" },
+  { time: "08:00", text: "Roboflow 检测到早上药格变空", sub: "OpenCV ROI 映射通过", color: C.amber, iconType: "dot" },
   { time: "12:00", text: "中午服药待确认", sub: "时段未到", color: C.fgMuted, iconType: "clock" },
 ];
 
@@ -980,8 +1020,8 @@ function HistoryScreen({ tab, setTab }: { tab: 0 | 1 | 2; setTab: (t: 0 | 1 | 2)
 function SettingsScreen({
   toggles, setToggles,
 }: {
-  toggles: { wrongSlot: boolean; dosage: boolean; missed: boolean };
-  setToggles: React.Dispatch<React.SetStateAction<{ wrongSlot: boolean; dosage: boolean; missed: boolean }>>;
+  toggles: { wrongSlot: boolean; dosage: boolean; missed: boolean; uncertain: boolean };
+  setToggles: React.Dispatch<React.SetStateAction<{ wrongSlot: boolean; dosage: boolean; missed: boolean; uncertain: boolean }>>;
 }) {
   return (
     <div style={{ paddingBottom: 24 }}>
@@ -994,8 +1034,8 @@ function SettingsScreen({
         <GlassCard>
           {[
             { label: "摄像头状态", value: "在线", valueColor: C.green, dot: true },
-            { label: "检测模式", value: "本地 YOLO", valueColor: C.teal, dot: false },
-            { label: "备用轻量方案", value: "FOMO", valueColor: C.fgMid, dot: false },
+            { label: "检测模式", value: "Roboflow YOLO", valueColor: C.teal, dot: false },
+            { label: "空间映射", value: "OpenCV ROI", valueColor: C.fgMid, dot: false },
           ].map((item, i) => (
             <div key={i} style={{ padding: "13px 16px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 14, color: C.fg }}>{item.label}</span>
@@ -1037,6 +1077,7 @@ function SettingsScreen({
             { label: "拿错药格立即通知", key: "wrongSlot" as const, desc: "检测到错误取药时" },
             { label: "剂量异常通知", key: "dosage" as const, desc: "药量与处方不符时" },
             { label: "未按时服药通知", key: "missed" as const, desc: "超时 15 分钟未服" },
+            { label: "视觉不确定通知", key: "uncertain" as const, desc: "低置信度或摄像头遮挡时" },
           ].map((item, i) => (
             <div key={i} style={{ padding: "13px 16px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -1094,7 +1135,7 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [alertModal, setAlertModal] = useState<number | null>(null);
   const [historyTab, setHistoryTab] = useState<0 | 1 | 2>(0);
-  const [toggles, setToggles] = useState({ wrongSlot: true, dosage: true, missed: true });
+  const [toggles, setToggles] = useState({ wrongSlot: true, dosage: true, missed: true, uncertain: true });
 
   return (
     <>

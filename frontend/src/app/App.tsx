@@ -79,10 +79,10 @@ const ALERTS = [
   },
   {
     severity: "提醒", sevColor: C.amber, sevBg: C.amberBg, sevBorder: C.amberBorder,
-    iconType: "info", title: "动作闭环未完成",
-    desc: "药格变空后等待 hand_to_mouth 与 swallow 双重确认",
+    iconType: "info", title: "漏服风险",
+    desc: "服药时段内未检测到药丸数量减少，系统提醒老人取药",
     time: "07:58", slot: "早上药格",
-    action: "提醒老人完成服药动作", resolved: false,
+    action: "语音提醒老人按时取药", resolved: false,
   },
   {
     severity: "待确认", sevColor: C.amber, sevBg: C.amberBg, sevBorder: C.amberBorder,
@@ -101,9 +101,10 @@ const ALERTS = [
 ];
 
 const SAFETY_STATES = [
-  { key: "MONITORING", label: "监控中", color: C.teal, bg: C.tealBg },
+  { key: "MONITORING", label: "等待取药事件", color: C.teal, bg: C.tealBg },
   { key: "LOCKED_WRONG_SLOT", label: "错误药格锁定", color: C.red, bg: C.redBg },
   { key: "WARNING_DOSAGE", label: "剂量异常", color: C.orange, bg: C.orangeBg },
+  { key: "MISSED_RISK", label: "漏服提醒", color: C.amber, bg: C.amberBg },
   { key: "UNCERTAIN", label: "视觉不确定", color: C.amber, bg: C.amberBg },
   { key: "RECOVERY", label: "恢复流程", color: C.green, bg: C.greenBg },
 ];
@@ -705,8 +706,8 @@ function LiveScreen() {
         <GlassCard style={{ padding: "4px 0" }}>
           {[
             { time: "07:58", text: "Roboflow 检测到早上药格 tablets × 2", color: C.green },
-            { time: "08:00", text: "OpenCV ROI 映射到 Morning，等待 hand_to_mouth", color: C.amber },
-            { time: "08:01", text: "成功条件：正确药格 + 剂量匹配 + hand_to_mouth + swallow", color: C.teal },
+            { time: "08:00", text: "OpenCV ROI 映射到 Morning，等待 pill_count 变化", color: C.amber },
+            { time: "08:01", text: "成功条件：正确时段 + 正确药格 + 取药数量匹配", color: C.teal },
           ].map((ev, i) => (
             <div key={i} style={{
               padding: "9px 16px",
@@ -913,9 +914,9 @@ function AlertModal({ index, onClose }: { index: number; onClose: () => void }) 
 // ─── Screen 4 · History ──────────────────────────────────────────
 
 const HISTORY_EVENTS = [
-  { time: "08:03", text: "早上服药已确认", sub: "正确药格 + 剂量匹配 + hand_to_mouth + swallow", color: C.green, iconType: "check" },
-  { time: "08:01", text: "检测到 hand_to_mouth 与 swallow", sub: "动作闭环完成", color: C.teal, iconType: "activity" },
-  { time: "08:00", text: "Roboflow 检测到早上药格变空", sub: "OpenCV ROI 映射通过", color: C.amber, iconType: "dot" },
+  { time: "08:03", text: "早上取药事件已确认", sub: "正确时段 + 正确药格 + 取药数量匹配", color: C.green, iconType: "check" },
+  { time: "08:01", text: "生成 TAKE_MED_EVENT", sub: "pill_count 2 -> 0，取出 2 粒", color: C.teal, iconType: "activity" },
+  { time: "08:00", text: "Roboflow 检测到早上药格数量变化", sub: "OpenCV ROI 映射通过", color: C.amber, iconType: "dot" },
   { time: "12:00", text: "中午服药待确认", sub: "时段未到", color: C.fgMuted, iconType: "clock" },
 ];
 

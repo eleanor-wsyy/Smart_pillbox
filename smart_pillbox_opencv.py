@@ -14,13 +14,13 @@ from PIL import Image, ImageDraw, ImageFont
 # ==========================================
 # 信号链：
 # 1. PillDetector 视觉类：提取固定药盒 ROI 中药丸的颜色特征和数量（为接入 YOLO/FOMO 深度学习解耦）。
-# 2. MedicationTracker 业务逻辑类：集成双向时间窗口判定、时段正确性拦截（防错药）、处方剂量校验。
+# 2. MedicationTracker 业务逻辑类：集成取药事件生成、时段正确性拦截（防错药）、处方剂量校验。
 # 3. Pillow 图像高级渲染：抗锯齿中文微软雅黑字体，半透明圆角玻璃态信息卡片，LED 发光光晕呼吸灯。
 #
 # 交互测试快捷键说明：
 # - 按 r/g/b 键：循环设置模拟器“早上/中午/晚上”药格内的药丸数量 (0 -> 1 -> 2 -> 3 -> 0)
 # - 按 t 键：循环切换当前系统服药时间段 (Morning -> Noon -> Evening -> Morning)
-# - 按 h/s/i 键：模拟 Edge Impulse 标签 hand_to_mouth / swallow / idle
+# - 按空格键：模拟当前时段药格被取空
 # - 按 q 键：退出程序
 
 COLOR_RANGES = {
@@ -66,30 +66,9 @@ SLOTS_CONFIG = {
     },
 }
 
-ACTION_LABELS = {
-    "idle": {
-        "name": "IDLE",
-        "cn": "空闲",
-        "color": (180, 180, 180),
-    },
-    "hand_to_mouth": {
-        "name": "HAND_TO_MOUTH",
-        "cn": "手部送药入口",
-        "color": (60, 210, 255),
-    },
-    "swallow": {
-        "name": "SWALLOW",
-        "cn": "喝水吞咽",
-        "color": (80, 240, 120),
-    },
-}
-
 WINDOW_NAME = "Memory Echo Pillbox - Vision Prototype V4.0"
 PRESENT_RATIO_THRESHOLD = 0.075
-WARNING_DELAY = 5.0
-SWALLOW_ON_TIME_LIMIT = 4.5
-CRITICAL_DELAY = WARNING_DELAY * 2
-HAND_TO_MOUTH_WINDOW = 8.0
+MISSED_REMINDER_DELAY = 12.0
 DETECTION_CONFIDENCE_THRESHOLD = 0.28
 RECOVERY_DISPLAY_SECONDS = 2.5
 
@@ -463,186 +442,130 @@ class LocalYoloPillDetector:
 
 
 class MedicationTracker:
-    """V4 安全状态机：防错药、剂量核对、动作闭环、低置信度暂停判定与恢复。"""
-    def __init__(self, slot_keys):
-        self.previous_present = {key: True for key in slot_keys}
-        self.pending_since = {key: None for key in slot_keys}
-        self.confirmed = {key: False for key in slot_keys}
-        self.feedback = {
-            key: SlotFeedback("ready", "READY", (100, 255, 100)) for key in slot_keys
-        }
-        self.last_status = {key: "ready" for key in slot_keys}
-        self.streak_count = 0
-        self.slow_swallow_count = 0
-        
-        # V3.0 双向时间窗口与用量校验所增加的参数
-        self.last_swallow_time = 0.0
-        self.last_hand_to_mouth_time = 0.0
-        self.last_consumed_swallow = {key: 0.0 for key in slot_keys}
-        self.last_pill_count = {key: 0 for key in slot_keys}
-        
-        # V3.2 错药即刻报警与帧对比参数
-        self.wrong_period_alarm = {key: False for key in slot_keys}
-        self.last_frame_pill_count = {key: 0 for key in slot_keys}
-        self.last_period = CURRENT_PERIOD
+    """No-swallow 安全状态机：只基于视觉药量变化生成取药事件，并判断漏服、错格和剂量风险。"""
 
-        # V4 状态机新增状态：视觉不确定与错误恢复提示
+    def __init__(self, slot_keys):
+        self.slot_keys = list(slot_keys)
+        self.previous_present = {key: True for key in self.slot_keys}
+        self.confirmed = {key: False for key in self.slot_keys}
+        self.feedback = {
+            key: SlotFeedback("ready", "READY", (100, 255, 100)) for key in self.slot_keys
+        }
+        self.last_status = {key: "ready" for key in self.slot_keys}
+        self.streak_count = 0
+        self.last_pill_count = {key: 0 for key in self.slot_keys}
+        self.last_taken_count = {key: 0 for key in self.slot_keys}
+        self.wrong_period_alarm = {key: False for key in self.slot_keys}
+        self.last_frame_pill_count = {key: 0 for key in self.slot_keys}
+        self.missed_alarm_sent = {key: False for key in self.slot_keys}
+        self.last_period = CURRENT_PERIOD
+        self.period_started_at = time.monotonic()
         self.system_state = "MONITORING"
-        self.recovery_until = {key: 0.0 for key in slot_keys}
-        
-        # V3.0 虚拟硬件联动看板的状态
+        self.recovery_until = {key: 0.0 for key in self.slot_keys}
+
         self.led_status = "OFF"
         self.buzzer_status = "OFF"
         self.voice_status = "OFF"
         self.last_events = []
 
-    def update(self, vision_results, action_label, now=None):
+    def update(self, vision_results, now=None):
         global CURRENT_PERIOD
         now = time.monotonic() if now is None else now
         events = []
-        
-        # 如果服药时段切换，重置所有错药报警，避免跨时段残留
+
         if CURRENT_PERIOD != self.last_period:
-            for k in self.wrong_period_alarm:
-                self.wrong_period_alarm[k] = False
+            for key in self.slot_keys:
+                self.wrong_period_alarm[key] = False
+                self.missed_alarm_sent[key] = False
+                self.confirmed[key] = False
+            self.period_started_at = now
             self.last_period = CURRENT_PERIOD
-        
-        # 识别最近一次吞咽时间
-        if action_label == "hand_to_mouth":
-            self.last_hand_to_mouth_time = now
-        if action_label == "swallow":
-            self.last_swallow_time = now
-        swallowed_now = (action_label == "swallow")
+            events.append(f"[INFO] 当前服药时段切换为 {SLOTS_CONFIG[CURRENT_PERIOD]['cn']}。")
 
         for key, result in vision_results.items():
-            became_empty = self.previous_present[key] and not result.present
+            previous_count = self.last_frame_pill_count[key]
+            current_count = result.pill_count
+            taken_count = max(0, previous_count - current_count)
+            take_event = previous_count > current_count
+            expected = MEDICATION_PLAN[key]["expected_count"]
+            uncertain = self._is_uncertain(result)
             status_event_emitted = False
 
-            # 判断是否从药盒中拿取了药物：当前帧药丸数少于上一帧，且上一帧有药
-            pill_decreased = (self.last_frame_pill_count[key] > 0 and result.pill_count < self.last_frame_pill_count[key])
-            uncertain = self._is_uncertain(result)
+            if take_event:
+                self.last_taken_count[key] = taken_count
+                self.last_pill_count[key] = taken_count
+                events.append(
+                    f"[EVENT] TAKE_MED_EVENT: {SLOTS_CONFIG[key]['cn']}药格 {previous_count}->{current_count}，取出 {taken_count} 粒。"
+                )
 
             if key != CURRENT_PERIOD:
-                # 1. 拿错时间段逻辑拦截：只要药丸数减少或者变空，立刻拉响警报
-                if pill_decreased or became_empty:
-                    if not self.wrong_period_alarm[key]:
-                        self.wrong_period_alarm[key] = True
-                        events.append(f"[CRITICAL] 警告：在错误时间段拿药！当前为 {CURRENT_PERIOD} 时段，请勿服用 {SLOTS_CONFIG[key]['cn']} 药格的药物！")
-                        status_event_emitted = True
-                
-                # 如果放回了药丸（当前药量恢复到 expected_count 以上），消除错药警报
-                expected = MEDICATION_PLAN[key]["expected_count"]
-                if result.present and result.pill_count >= expected:
-                    if self.wrong_period_alarm[key]:
-                        self.wrong_period_alarm[key] = False
-                        self.recovery_until[key] = now + RECOVERY_DISPLAY_SECONDS
-                        events.append(f"[INFO] {SLOTS_CONFIG[key]['cn']} 药格错药警报消除：药丸已放回。")
-                        status_event_emitted = True
-
-                # 根据报警状态映射反馈
-                if self.wrong_period_alarm[key]:
-                    feedback = SlotFeedback("critical", f"WRONG PERIOD! (CURRENT: {CURRENT_PERIOD})", (40, 40, 255))
-                elif self.recovery_until[key] > now:
+                if take_event:
+                    self.wrong_period_alarm[key] = True
+                    self.confirmed[key] = False
+                    feedback = SlotFeedback("critical", f"WRONG SLOT TAKE: {taken_count}", (40, 40, 255))
+                    events.append(
+                        f"[CRITICAL] 孔位错误：当前应服 {SLOTS_CONFIG[CURRENT_PERIOD]['cn']}，但 {SLOTS_CONFIG[key]['cn']} 药格发生取药事件。"
+                    )
+                    status_event_emitted = True
+                elif self.wrong_period_alarm[key] and result.present and current_count >= expected:
+                    self.wrong_period_alarm[key] = False
+                    self.recovery_until[key] = now + RECOVERY_DISPLAY_SECONDS
                     feedback = SlotFeedback("recovery", "RECOVERY: PILLS RETURNED", (80, 240, 120))
+                    events.append(f"[INFO] {SLOTS_CONFIG[key]['cn']} 药格已恢复，错格警报解除。")
+                    status_event_emitted = True
+                elif self.wrong_period_alarm[key]:
+                    feedback = SlotFeedback("critical", f"WRONG SLOT LOCKED ({taken_count or self.last_taken_count[key]})", (40, 40, 255))
+                elif self.recovery_until[key] > now:
+                    feedback = SlotFeedback("recovery", "RECOVERY: BACK TO MONITOR", (80, 240, 120))
                 elif uncertain:
                     feedback = SlotFeedback("uncertain", "UNCERTAIN: ADJUST CAMERA", (0, 210, 255))
+                elif result.present:
+                    self.last_pill_count[key] = current_count
+                    feedback = self._build_loaded_feedback(result, expected)
                 else:
-                    if result.present:
-                        self.last_pill_count[key] = result.pill_count  # 暂存当前药丸数
-                        if result.pill_count == expected:
-                            feedback = SlotFeedback("ready", f"FULL / Pills: {result.pill_count}", (100, 255, 100))
-                        else:
-                            feedback = SlotFeedback("wrong_ready", f"WRONG DOSAGE ({result.pill_count}/{expected})", (0, 102, 255))
-                    else:
-                        # 正常空置状态：在非当前时段且无报警，显示中性的“空置就绪”
-                        feedback = SlotFeedback("empty_normal", "EMPTY / READY", (180, 180, 180))
+                    feedback = SlotFeedback("empty_normal", "EMPTY / READY", (180, 180, 180))
             else:
-                # 2. 拿对时间段逻辑
                 self.wrong_period_alarm[key] = False
 
                 if self.recovery_until[key] > now:
                     feedback = SlotFeedback("recovery", "RECOVERY: BACK TO MONITOR", (80, 240, 120))
                 elif uncertain:
                     feedback = SlotFeedback("uncertain", "UNCERTAIN: ADJUST CAMERA", (0, 210, 255))
+                elif take_event:
+                    self.missed_alarm_sent[key] = False
+                    if taken_count == expected:
+                        self.confirmed[key] = True
+                        self.streak_count += 1
+                        feedback = SlotFeedback("confirmed", f"TAKE EVENT OK: {taken_count}", (80, 240, 120))
+                        events.append(
+                            f"[INFO] 正常取药：{SLOTS_CONFIG[key]['cn']}药格取出 {taken_count} 粒，符合处方 {expected} 粒。"
+                        )
+                        if self.streak_count % 3 == 0:
+                            events.append(self._format_event(key, "reward", streak_count=self.streak_count))
+                    else:
+                        self.confirmed[key] = False
+                        self.streak_count = 0
+                        feedback = SlotFeedback("warning", f"DOSAGE ERROR: TAKEN {taken_count}/{expected}", (0, 102, 255))
+                        events.append(
+                            f"[WARNING] 剂量异常：{SLOTS_CONFIG[key]['cn']}药格应取 {expected} 粒，实际取出 {taken_count} 粒。"
+                        )
+                    status_event_emitted = True
+                elif self.confirmed[key] and current_count <= max(0, expected - self.last_taken_count[key]):
+                    feedback = SlotFeedback("confirmed", f"TAKE EVENT OK: {self.last_taken_count[key]}", (80, 240, 120))
                 elif result.present:
-                    # 重新装药，复位此药格所有状态
-                    self.pending_since[key] = None
-                    self.confirmed[key] = False
-                    self.last_pill_count[key] = result.pill_count  # 暂存当前药丸数作为服药对比
-                    
-                    expected = MEDICATION_PLAN[key]["expected_count"]
-                    if result.pill_count == expected:
-                        feedback = SlotFeedback("ready", f"FULL / Pills: {result.pill_count}", (100, 255, 100))
+                    self.last_pill_count[key] = current_count
+                    if now - self.period_started_at >= MISSED_REMINDER_DELAY:
+                        feedback = SlotFeedback("missed", "MISSED RISK: NO TAKE EVENT", (60, 220, 255))
+                        if not self.missed_alarm_sent[key]:
+                            self.missed_alarm_sent[key] = True
+                            events.append(
+                                f"[WARNING] 漏服风险：{SLOTS_CONFIG[key]['cn']}服药时段内药丸数量未变化，请提醒老人服药。"
+                            )
+                            status_event_emitted = True
                     else:
-                        feedback = SlotFeedback("wrong_ready", f"WRONG DOSAGE ({result.pill_count}/{expected})", (0, 102, 255))
+                        feedback = self._build_loaded_feedback(result, expected)
                 else:
-                    # 药盒变空逻辑
-                    if became_empty:
-                        # 检查“变空前窗口 (5.0s)”是否有未消费的吞咽动作
-                        if self.last_swallow_time > self.last_consumed_swallow[key] and (now - self.last_swallow_time <= 5.0):
-                            if self._has_recent_hand_to_mouth(now):
-                                feedback = self._confirm_or_warn_dosage(
-                                    key,
-                                    now,
-                                    now - self.last_swallow_time,
-                                    "confirmed_early",
-                                    events,
-                                )
-                                self.pending_since[key] = None
-                                self.last_consumed_swallow[key] = self.last_swallow_time
-                            else:
-                                self.pending_since[key] = now
-                                self.streak_count = 0
-                                feedback = SlotFeedback("warning", "WAITING HAND ACTION", (60, 220, 255))
-                                events.append(
-                                    f"[WARNING] {SLOTS_CONFIG[key]['cn']}药格已空并检测到吞咽，但未检测到 hand_to_mouth，暂不记录成功。"
-                                )
-                            status_event_emitted = True
-                        else:
-                            self.pending_since[key] = now
-                            feedback = SlotFeedback("waiting", "WAITING SWALLOW", (60, 220, 255))
-
-                    if self.confirmed[key]:
-                        actual_taken = self.last_pill_count[key]
-                        expected = MEDICATION_PLAN[key]["expected_count"]
-                        if actual_taken == expected:
-                            feedback = SlotFeedback("confirmed", "CONFIRMED: TAKEN", (80, 240, 120))
-                        else:
-                            feedback = SlotFeedback("warning", f"DOSAGE ERROR: TAKEN {actual_taken}", (0, 102, 255))
-                    else:
-                        # 尚未确认，检查“变空后窗口”是否检测到吞咽动作
-                        if became_empty:
-                            pass
-                        elif swallowed_now and self.pending_since[key] is not None:
-                            swallow_duration = now - self.pending_since[key]
-                            if self._has_recent_hand_to_mouth(now):
-                                feedback = self._confirm_or_warn_dosage(
-                                    key,
-                                    now,
-                                    swallow_duration,
-                                    "confirmed",
-                                    events,
-                                )
-                                self.pending_since[key] = None
-                                self.last_consumed_swallow[key] = self.last_swallow_time
-                            else:
-                                self.streak_count = 0
-                                feedback = SlotFeedback("warning", "WAITING HAND ACTION", (60, 220, 255))
-                                events.append(
-                                    f"[WARNING] {SLOTS_CONFIG[key]['cn']}检测到吞咽，但缺少 hand_to_mouth 前置动作，暂不记录成功。"
-                                )
-                            status_event_emitted = True
-                        else:
-                            # 没检测到吞咽，根据超时状态变色
-                            wait_time = 0.0 if self.pending_since[key] is None else now - self.pending_since[key]
-                            if wait_time >= CRITICAL_DELAY:
-                                self.streak_count = 0
-                                feedback = SlotFeedback("critical", "CRITICAL: FAKE TAKING?", (40, 40, 255))
-                            elif wait_time >= WARNING_DELAY:
-                                self.streak_count = 0
-                                feedback = SlotFeedback("warning", "WARNING: NO SWALLOW", (60, 220, 255))
-                            else:
-                                feedback = SlotFeedback("waiting", "WAITING SWALLOW", (60, 220, 255))
+                    feedback = SlotFeedback("empty_normal", "EMPTY / NO EVENT", (180, 180, 180))
 
             if feedback.status != self.last_status[key]:
                 if not status_event_emitted:
@@ -650,14 +573,8 @@ class MedicationTracker:
                 self.last_status[key] = feedback.status
 
             self.feedback[key] = feedback
-            self.last_frame_pill_count[key] = result.pill_count
+            self.last_frame_pill_count[key] = current_count
             self.previous_present[key] = result.present
-
-        # 吞咽动作与药量关联校验：如果吞咽动作发生，但当前服药药格依然有药，说明发生了逻辑断层
-        if swallowed_now:
-            active_result = vision_results[CURRENT_PERIOD]
-            if active_result.present:
-                events.append(f"[WARNING] 检测到吞咽动作，但当前药格 {SLOTS_CONFIG[CURRENT_PERIOD]['cn']} 药丸未减少，提示漏服或假吃风险！")
 
         self.last_events = events
         self.update_hardware_state(now)
@@ -667,60 +584,11 @@ class MedicationTracker:
         """只对检测到药丸但置信度偏低的画面暂停判定，避免把空药格误报为不确定。"""
         return result.present and 0.0 < result.confidence < DETECTION_CONFIDENCE_THRESHOLD
 
-    def _has_recent_hand_to_mouth(self, now):
-        return now - self.last_hand_to_mouth_time <= HAND_TO_MOUTH_WINDOW
-
-    def _confirm_or_warn_dosage(self, key, now, swallow_duration, event_status, events):
-        actual_taken = self.last_pill_count[key]
-        expected = MEDICATION_PLAN[key]["expected_count"]
-
-        if actual_taken != expected:
-            self.confirmed[key] = False
-            self.streak_count = 0
-            events.append(f"[WARNING] 服药数量异常！预期 {expected} 颗，视觉检出 {actual_taken} 颗。")
-            return SlotFeedback("warning", f"DOSAGE ERROR: TAKEN {actual_taken}", (0, 102, 255))
-
-        self.confirmed[key] = True
-        if event_status == "confirmed_early":
-            self.streak_count += 1
-            self.slow_swallow_count = 0
-            events.append(
-                self._format_event(
-                    key,
-                    "confirmed_early",
-                    swallow_duration=swallow_duration,
-                    streak_count=self.streak_count,
-                )
-            )
-        elif swallow_duration <= SWALLOW_ON_TIME_LIMIT:
-            self.streak_count += 1
-            self.slow_swallow_count = 0
-            events.append(
-                self._format_event(
-                    key,
-                    "confirmed",
-                    swallow_duration=swallow_duration,
-                    streak_count=self.streak_count,
-                )
-            )
-        else:
-            self.streak_count = 0
-            self.slow_swallow_count += 1
-            events.append(self._format_event(key, "confirmed_slow", swallow_duration=swallow_duration))
-            if self.slow_swallow_count >= 2:
-                events.append(
-                    self._format_event(
-                        key,
-                        "medical",
-                        swallow_duration=swallow_duration,
-                        slow_count=self.slow_swallow_count,
-                    )
-                )
-
-        if self.streak_count > 0 and self.streak_count % 3 == 0:
-            events.append(self._format_event(key, "reward", streak_count=self.streak_count))
-
-        return SlotFeedback("confirmed", "CONFIRMED: TAKEN", (80, 240, 120))
+    @staticmethod
+    def _build_loaded_feedback(result, expected):
+        if result.pill_count == expected:
+            return SlotFeedback("ready", f"READY / Pills: {result.pill_count}", (100, 255, 100))
+        return SlotFeedback("wrong_ready", f"WRONG DOSAGE ({result.pill_count}/{expected})", (0, 102, 255))
 
     def update_hardware_state(self, now):
         """根据当前药格与日志状态，计算声光报警器的模拟输出指标"""
@@ -733,10 +601,11 @@ class MedicationTracker:
         has_uncertain = any(fb.status == "uncertain" for fb in self.feedback.values())
         has_recovery = any(fb.status == "recovery" for fb in self.feedback.values())
         
-        has_warning_dosage = False
-        for key, fb in self.feedback.items():
-            if fb.status == "warning" and "DOSAGE ERROR" in fb.text:
-                has_warning_dosage = True
+        has_warning_dosage = any(
+            fb.status == "warning" and "DOSAGE ERROR" in fb.text
+            for fb in self.feedback.values()
+        )
+        has_missed = any(fb.status == "missed" for fb in self.feedback.values())
                 
         has_confirmed = any(fb.status == "confirmed" for fb in self.feedback.values())
         has_waiting = any(fb.status in ("waiting", "warning") for fb in self.feedback.values())
@@ -770,16 +639,16 @@ class MedicationTracker:
             self.led_status = "GREEN"
             self.buzzer_status = "SHORT_BEEP"
             self.voice_status = "NORMAL_CONFIRMED"
+        elif has_missed:
+            self.system_state = "MISSED_RISK"
+            self.led_status = "YELLOW"
+            self.buzzer_status = "OFF"
+            self.voice_status = "REMIND_TAKE"
         elif has_waiting:
             self.system_state = "NORMAL_IN_PROGRESS"
             self.led_status = "YELLOW"
             self.buzzer_status = "OFF"
             self.voice_status = "OFF"
-
-        # 吞咽动作发生但药未变警告（在无高级警报时触发）
-        if self.voice_status == "OFF" and any("药丸未减少" in str(evt) for evt in self.last_events):
-            self.led_status = "YELLOW"
-            self.voice_status = "SWALLOW_BUT_FULL"
 
 
     @staticmethod
@@ -787,43 +656,20 @@ class MedicationTracker:
         cn_name = SLOTS_CONFIG[slot_key]["cn"]
 
         if status == "confirmed":
-            duration = details.get("swallow_duration", 0.0)
-            streak = details.get("streak_count", 0)
-            return (
-                f"[INFO] {cn_name}服药已确认：吞咽耗时 {duration:.1f}s，"
-                f"连续打卡 {streak} 次；仅记录无感打卡。"
-            )
-        if status == "confirmed_early":
-            duration = details.get("swallow_duration", 0.0)
-            streak = details.get("streak_count", 0)
-            return (
-                f"[INFO] {cn_name}服药已确认（提前吞咽）：吞咽动作发生在药格变空前 {duration:.1f}s，"
-                f"连续打卡 {streak} 次；仅记录无感打卡。"
-            )
-        if status == "confirmed_slow":
-            duration = details.get("swallow_duration", 0.0)
-            return (
-                f"[INFO] {cn_name}服药已确认，但吞咽耗时 {duration:.1f}s，"
-                "本次不计入连续打卡。"
-            )
+            return f"[INFO] {cn_name}药格取药事件已确认：数量变化符合处方。"
         if status == "waiting":
-            return f"[INFO] {cn_name}药格变空：等待吞咽动作确认。"
+            return f"[INFO] {cn_name}药格等待取药事件。"
         if status == "warning":
-            return f"[WARNING] {cn_name}药格已空但未及时检测到吞咽：触发本地语音温和催促。"
+            return f"[WARNING] {cn_name}药格剂量异常：请核对取出数量。"
+        if status == "missed":
+            return f"[WARNING] {cn_name}时段内未检测到取药事件：触发漏服提醒。"
         if status == "critical":
-            return f"[CRITICAL] {cn_name}长时间未检测到吞咽：疑似假吃/漏服，建议通知家属确认。"
+            return f"[CRITICAL] {cn_name}药格发生错误时段取药事件：建议立即干预。"
         if status == "reward":
             streak = details.get("streak_count", 0)
             return f"[REWARD] 连续按时服药 {streak} 次：解锁亲情照片盲盒奖励。"
-        if status == "medical":
-            duration = details.get("swallow_duration", 0.0)
-            slow_count = details.get("slow_count", 0)
-            return (
-                f"[MEDICAL] 连续 {slow_count} 次吞咽耗时超过 {SWALLOW_ON_TIME_LIMIT:.1f}s；"
-                f"本次 {cn_name}吞咽耗时 {duration:.1f}s，提示吞咽变慢风险。"
-            )
         if status == "ready":
-            return f"[INFO] {cn_name}药格检测到药丸/托盘：状态复位为未服药。"
+            return f"[INFO] {cn_name}药格检测到药丸：等待数量变化。"
         return f"[INFO] {cn_name}药格状态更新：{status}。"
 
 
@@ -853,7 +699,7 @@ def offset_contours(contours, x_offset, y_offset):
 # PIL 高端看板绘制层
 # ==========================================
 
-def draw_top_banner_pil(draw, tracker, action_label):
+def draw_top_banner_pil(draw, tracker):
     """绘制精美的系统顶部状态卡片栏"""
     font_title = get_font(15, bold=True)
     font_sub = get_font(10)
@@ -867,16 +713,10 @@ def draw_top_banner_pil(draw, tracker, action_label):
     draw.text((20, 13), "记忆回音 · 阿尔茨海默症辅助服药系统 V4.0", font=font_title, fill=(255, 255, 255, 255))
     draw.text((20, 36), "Memory Echo Smart Pillbox Monitor", font=font_sub, fill=(150, 155, 165, 255))
     
-    # 右侧动作监测状态与连续打卡天数
-    action_info = ACTION_LABELS[action_label]
-    act_str = f"动作检测: 【{action_info['cn']}】"
-    act_color = action_info['color']
-    act_color_rgb = (act_color[2], act_color[1], act_color[0], 255)  # BGR 转换为 RGBA
-    
-    draw.text((900 - 450, 22), act_str, font=font_info, fill=act_color_rgb)
-    
     if tracker is not None:
-        streak_str = f"连续按时服药打卡: {tracker.streak_count} 次"
+        state_str = f"状态机: {tracker.system_state}"
+        streak_str = f"连续正确取药: {tracker.streak_count} 次"
+        draw.text((900 - 450, 22), state_str, font=font_info, fill=(80, 220, 255, 255))
         draw.text((900 - 240, 22), streak_str, font=font_info, fill=(255, 215, 0, 255))
 
 
@@ -925,22 +765,22 @@ def draw_slot_overlay_pil(draw, vision_results, feedback, tracker, frame_shape=N
             border_color = (255, 210, 0)   # 黄色
             badge_bg = (210, 170, 0, 255)
             badge_text_color = (30, 30, 30, 255)
-            badge_str = "药格变空 · 等待吞咽"
+            badge_str = "取药事件处理中"
         elif status == "warning":
             if "DOSAGE ERROR" in status_text:
                 border_color = (255, 100, 0)  # 橙色
                 badge_bg = (230, 80, 10, 255)
                 badge_str = "服药数量异常！"
-            elif "HAND ACTION" in status_text:
-                border_color = (255, 210, 0)  # 黄色
-                badge_bg = (210, 170, 0, 255)
-                badge_text_color = (30, 30, 30, 255)
-                badge_str = "缺少送药入口动作"
             else:
                 border_color = (255, 210, 0)  # 黄色
                 badge_bg = (210, 170, 0, 255)
                 badge_text_color = (30, 30, 30, 255)
-                badge_str = "未检测到吞咽 · 语音催促"
+                badge_str = "请核对药量"
+        elif status == "missed":
+            border_color = (255, 210, 0)
+            badge_bg = (210, 170, 0, 255)
+            badge_text_color = (30, 30, 30, 255)
+            badge_str = "漏服风险 · 请提醒"
         elif status == "uncertain":
             border_color = (0, 210, 255)
             badge_bg = (0, 150, 210, 255)
@@ -952,14 +792,14 @@ def draw_slot_overlay_pil(draw, vision_results, feedback, tracker, frame_shape=N
         elif status == "confirmed":
             border_color = (80, 240, 120)  # 绿色
             badge_bg = (40, 180, 80, 255)
-            badge_str = "正常服药已确认"
+            badge_str = "正确取药已确认"
         elif status == "critical":
             border_color = (255, 40, 40)   # 红色
             badge_bg = (220, 30, 30, 255)
             if "WRONG PERIOD" in status_text:
                 badge_str = "警告：拿错时间段！"
             else:
-                badge_str = "严重警告：疑似假吃！"
+                badge_str = "严重警告：错误取药！"
         elif status == "empty_normal":
             border_color = (120, 125, 135)  # 灰色
             badge_bg = (100, 105, 115, 255)
@@ -1051,7 +891,7 @@ def draw_hardware_panel_pil(draw, tracker, frame_shape=None):
     if tracker.led_status == "GREEN":
         led_seg = "🟢 正常"
     elif tracker.led_status == "YELLOW":
-        led_seg = "🟡 待吞"
+        led_seg = "🟡 待取"
     elif tracker.led_status == "RED":
         led_seg = "🔴 警报"
     else:
@@ -1069,17 +909,17 @@ def draw_hardware_panel_pil(draw, tracker, frame_shape=None):
         voice_seg = "🔊 拿错药格!"
         line_color = (255, 40, 40, 255)
     elif tracker.voice_status == "URGENT_CONFIRM":
-        voice_seg = "🔊 请服药"
+        voice_seg = "🔊 请取药"
         line_color = (255, 210, 0, 255)
-    elif tracker.voice_status == "SWALLOW_BUT_FULL":
-        voice_seg = "🔊 药量未减"
-        line_color = (255, 140, 0, 255)
     elif tracker.voice_status == "ADJUST_CAMERA":
         voice_seg = "🔊 调整画面"
         line_color = (0, 210, 255, 255)
     elif tracker.voice_status == "RECOVERY_OK":
         voice_seg = "🔊 已恢复"
         line_color = (80, 240, 120, 255)
+    elif tracker.voice_status == "REMIND_TAKE":
+        voice_seg = "🔊 请取药"
+        line_color = (255, 210, 0, 255)
     elif tracker.led_status == "GREEN":
         line_color = (80, 240, 120, 255)
     elif tracker.led_status == "YELLOW":
@@ -1116,7 +956,7 @@ def draw_hardware_panel_pil(draw, tracker, frame_shape=None):
     draw.text((text_x, text_y), status_line, font=font_text, fill=line_color)
 
 
-def process_frame(frame, action_label="idle", tracker=None, detector=None):
+def process_frame(frame, tracker=None, detector=None):
     if detector is None:
         detector = PillDetector()
     output = frame.copy()
@@ -1141,7 +981,7 @@ def process_frame(frame, action_label="idle", tracker=None, detector=None):
         }
         events = []
     else:
-        feedback, events = tracker.update(vision_results, action_label)
+        feedback, events = tracker.update(vision_results)
 
     # 3. 绘制底层的 OpenCV 矢量元素（抗锯齿的药格圆环和药丸轮廓）
     for key, config in SLOTS_CONFIG.items():
@@ -1165,7 +1005,7 @@ def process_frame(frame, action_label="idle", tracker=None, detector=None):
     draw_overlay = ImageDraw.Draw(img_overlay)
 
     # 绘制实心顶部 Banner 看板（直接画在 img_base 上以保留高性能）
-    draw_top_banner_pil(ImageDraw.Draw(img_base), tracker, action_label)
+    draw_top_banner_pil(ImageDraw.Draw(img_base), tracker)
     
     # 绘制悬浮信息卡片（画在半透明覆盖层上）
     draw_slot_overlay_pil(draw_overlay, vision_results, feedback, tracker, output.shape)
@@ -1188,7 +1028,7 @@ def draw_pill(img, center, r, color):
     cv2.circle(img, (center[0] - r // 3, center[1] - r // 3), r // 3, (245, 245, 245), -1, lineType=cv2.LINE_AA)
 
 
-def draw_simulator_scene(slot_states, action_label):
+def draw_simulator_scene(slot_states):
     img = np.full((560, 900, 3), (42, 45, 48), dtype=np.uint8)
 
     # 绘制药盒主体大边框
@@ -1196,7 +1036,7 @@ def draw_simulator_scene(slot_states, action_label):
     cv2.rectangle(img, (70, 210), (830, 440), (122, 126, 130), 2)
     
     # 底部按键操作说明提示
-    cv2.putText(img, "SIMULATOR: r/g/b cycle count (0-3), t cycle period, h hand, s swallow, i idle, q quit",
+    cv2.putText(img, "SIMULATOR: r/g/b cycle count, SPACE take current slot, t period, q quit",
                 (78, 475), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (190, 210, 230), 1, cv2.LINE_AA)
 
     for key, config in SLOTS_CONFIG.items():
@@ -1227,12 +1067,12 @@ def draw_simulator_scene(slot_states, action_label):
                 draw_pill(img, (cx - 18, cy + 15), pill_r, config["color"])
                 draw_pill(img, (cx + 18, cy + 15), pill_r, config["color"])
 
-    draw_person_and_action(img, action_label)
+    draw_person_panel(img)
     return img
 
 
-def draw_person_and_action(img, action_label):
-    """绘制右侧被监护人简易画像和行为动效"""
+def draw_person_panel(img):
+    """绘制右侧被监护人简易画像。No-swallow 版本不模拟手势或吞咽。"""
     face_center = (690, 125)
     mouth = (690, 148)
     cv2.circle(img, face_center, 52, (205, 185, 165), -1, lineType=cv2.LINE_AA)
@@ -1240,17 +1080,6 @@ def draw_person_and_action(img, action_label):
     cv2.circle(img, (710, 110), 5, (40, 40, 40), -1, lineType=cv2.LINE_AA)
     cv2.ellipse(img, mouth, (20, 8), 0, 0, 180, (60, 60, 60), 2, lineType=cv2.LINE_AA)
     cv2.line(img, (690, 177), (690, 205), (190, 170, 150), 8, lineType=cv2.LINE_AA)
-
-    if action_label == "hand_to_mouth":
-        cv2.line(img, (560, 225), (635, 170), (185, 160, 140), 14, lineType=cv2.LINE_AA)
-        cv2.circle(img, (645, 164), 18, (205, 185, 165), -1, lineType=cv2.LINE_AA)
-        cv2.circle(img, (666, 152), 8, (245, 245, 245), -1, lineType=cv2.LINE_AA)
-    elif action_label == "swallow":
-        cv2.rectangle(img, (598, 138), (626, 183), (220, 235, 245), -1)
-        cv2.rectangle(img, (598, 138), (626, 183), (150, 170, 185), 2)
-        cv2.line(img, (632, 160), (660, 150), (185, 160, 140), 10, lineType=cv2.LINE_AA)
-        cv2.circle(img, (690, 190), 11, (80, 240, 120), 2, lineType=cv2.LINE_AA)
-        cv2.circle(img, (690, 190), 20, (80, 240, 120), 1, lineType=cv2.LINE_AA)
 
 
 def print_intro(use_camera):
@@ -1262,10 +1091,8 @@ def print_intro(use_camera):
     print("  r     : 循环切换“早上(Morning)”药格药片数 (0->1->2->3->0)")
     print("  g     : 循环切换“中午(Noon)”药格药片数")
     print("  b     : 循环切换“晚上(Evening)”药格药片数")
+    print("  Space : 模拟当前时段药格被取空，生成 TAKE_MED_EVENT")
     print("  t     : 循环切换当前系统服药时间段 (Morning->Noon->Evening->Morning)")
-    print("  h     : 模拟 Edge Impulse 标签 hand_to_mouth（手部送药入口）")
-    print("  s     : 模拟 Edge Impulse 标签 swallow（喝水吞咽）")
-    print("  i     : 模拟 Edge Impulse 标签 idle（空闲）")
     print("  q     : 退出程序")
     print("模式：", "摄像头识别 + 键盘动作模拟" if use_camera else "无摄像头模拟器")
     print("==================================================")
@@ -1304,10 +1131,10 @@ def open_camera(camera_index, backend_preference="auto"):
     return None, None
 
 
-def handle_keypress(key, slot_states, current_action):
+def handle_keypress(key, slot_states):
     global CURRENT_PERIOD
     if key == ord("q"):
-        return current_action, True
+        return True
     
     if key == ord("r"):
         slot_states["Morning"] = (slot_states["Morning"] + 1) % 4
@@ -1318,6 +1145,9 @@ def handle_keypress(key, slot_states, current_action):
     elif key == ord("b"):
         slot_states["Evening"] = (slot_states["Evening"] + 1) % 4
         print(f"模拟器更新：晚上药格内药片数量循环设为 {slot_states['Evening']}")
+    elif key == ord(" "):
+        slot_states[CURRENT_PERIOD] = 0
+        print(f"模拟器更新：当前时段【{CURRENT_PERIOD}】药格已取空，将生成 TAKE_MED_EVENT")
         
     elif key == ord("t"):
         if CURRENT_PERIOD == "Morning":
@@ -1327,19 +1157,7 @@ def handle_keypress(key, slot_states, current_action):
         else:
             CURRENT_PERIOD = "Morning"
         print(f"模拟器更新：当前系统时段切换为【{CURRENT_PERIOD}】")
-        
-    elif key == ord("h"):
-        current_action = "hand_to_mouth"
-        slot_states[CURRENT_PERIOD] = 0  # 自动将当前时段药盒清空
-        print(f"动作分类模拟：手部送药入口。当前时段【{CURRENT_PERIOD}】药格自动清空！")
-    elif key == ord("s"):
-        current_action = "swallow"
-        slot_states[CURRENT_PERIOD] = 0  # 自动将当前时段药盒清空
-        print(f"动作分类模拟：喝水吞咽。当前时段【{CURRENT_PERIOD}】药格已清空！")
-    elif key == ord("i"):
-        current_action = "idle"
-        print("动作分类模拟：空闲")
-    return current_action, False
+    return False
 
 
 def create_detector_from_args(args):
@@ -1394,17 +1212,17 @@ def save_demo_snapshot(path, detector=None):
         detector = PillDetector()
     
     # 首先更新一帧，记录初始装药量（3颗）
-    frame_init = draw_simulator_scene(slot_states, "idle")
+    frame_init = draw_simulator_scene(slot_states)
     tracker.update({
         "Morning": SlotVisionResult(True, 1.0, 0.1, (0,0,10,10), 2),
         "Noon": SlotVisionResult(True, 1.0, 0.1, (0,0,10,10), 1),
         "Evening": SlotVisionResult(True, 1.0, 0.1, (0,0,10,10), 3)
-    }, "idle")
+    })
     
     # 模拟拿走一颗药
     slot_states["Evening"] = 2
-    frame = draw_simulator_scene(slot_states, "idle")
-    processed, _, _, events = process_frame(frame, "idle", tracker, detector)
+    frame = draw_simulator_scene(slot_states)
+    processed, _, _, events = process_frame(frame, tracker, detector)
     
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1453,7 +1271,6 @@ def main():
     # 早上默认有2粒（正确用量），中午1粒（正确），晚上3粒（正确）
     slot_states = {"Morning": 2, "Noon": 1, "Evening": 3}
     tracker = MedicationTracker(SLOTS_CONFIG.keys())
-    current_action = "idle"
 
     cap = None
     use_camera = False
@@ -1481,16 +1298,15 @@ def main():
             if not args.no_camera_mirror:
                 cv2.flip(frame, 1, frame)
         else:
-            frame = draw_simulator_scene(slot_states, current_action)
+            frame = draw_simulator_scene(slot_states)
 
-        processed, _, _, events = process_frame(frame, current_action, tracker, detector)
+        processed, _, _, events = process_frame(frame, tracker, detector)
         for event in events:
             print("反馈事件：", event)
 
         cv2.imshow(WINDOW_NAME, processed)
         key = cv2.waitKey(30) & 0xFF
-        current_action, should_quit = handle_keypress(key, slot_states, current_action)
-        if should_quit:
+        if handle_keypress(key, slot_states):
             break
 
     if cap is not None and cap.isOpened():

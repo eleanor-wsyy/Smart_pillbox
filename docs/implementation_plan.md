@@ -1,5 +1,7 @@
 # 实施计划 - 智能药盒状态复位、双向时间窗口与药量校验警报优化
 
+> Legacy note: 本文件记录 V3 阶段的历史实施计划，里面的吞咽确认、`h/s/i` 动作模拟和旧剂量配置已经被 V4.0 废弃。当前交付版本以 `docs/v4_yolo_opencv_hybrid_upgrade.md` 和 `docs/v4_flowchart_mermaid.md` 为准：系统只基于 `pill_count` 的稳定下降生成取药事件。
+
 根据您提供的新讨论记录，我们针对**药片体积小导致数量不易识别、各药格预设用量不同、服药剂量错误警报**等实际痛点，对实施计划进行了进一步升级。
 
 我们将完整合并您组员在 [smart_pillbox_opencv(1)(1).py](file:///d:/interface/smart_pillbox_opencv(1)(1).py) 中的全部工作，并在其基础上实现一个功能更丰富、交互更逼真的系统。

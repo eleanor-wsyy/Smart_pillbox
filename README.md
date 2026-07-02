@@ -1,6 +1,6 @@
 # Smart Pillbox: Memory Echo Vision Prototype
 
-阿尔茨海默症长者辅助服药的智能药盒视觉识别原型。项目通过 OpenCV/Pillow 构建可交互演示界面，并把药丸视觉检测、服药动作模拟、时间段防错药、处方剂量核对和声光语音反馈串成一套完整流程。
+阿尔茨海默症长者辅助服药的智能药盒视觉识别原型。项目通过 OpenCV/Pillow 构建可交互演示界面，并把药丸视觉检测、药格空间映射、取药事件防抖、时间段防错药、处方剂量核对和声光语音反馈串成一套完整流程。
 
 ![demo](assets/demo_snapshot_v3_2.png)
 
@@ -8,8 +8,9 @@
 
 - 药格视觉识别：检测早上、中午、晚上三个药格是否有药，并统计药丸数量。
 - 处方剂量校验：每个时段可设置预期药量，装药数量不符时提示 `WRONG DOSAGE`。
-- 防错药机制：非当前时段药格被取药时触发严重警报。
-- 吞咽确认：用键盘模拟 `hand_to_mouth` / `swallow` / `idle` 动作，验证服药闭环。
+- 纯视觉取药事件：只根据 `pill_count` 的连续稳定下降生成 `TAKE_MED_EVENT`，不引入吞咽、手势、姿态或人体动作识别。
+- 事件防抖：药丸数量下降必须持续至少 2 帧才会确认，降低单帧抖动造成的误报警。
+- 防错药机制：非当前时段药格发生已确认取药事件时触发严重警报。
 - 多检测后端：支持本地 OpenCV、电脑端本地 YOLO、Roboflow 云端 YOLO。
 - 轻量设备预留：业务层统一使用 `SlotVisionResult`，后续可把 FOMO 检测结果转换成同一结构接入。
 
@@ -21,8 +22,10 @@
 ├── assets/
 │   └── demo_snapshot_v3_2.png   # 演示截图
 ├── docs/
-│   ├── demo3.0.md               # 版本升级说明
-│   └── implementation_plan.md   # 实施计划
+│   ├── v4_yolo_opencv_hybrid_upgrade.md  # V4 No-swallow + 检测稳定性说明
+│   ├── v4_flowchart_mermaid.md           # V4 流程图
+│   ├── demo3.0.md                        # V3 历史需求归档
+│   └── implementation_plan.md            # V3 历史实施计划归档
 ├── requirements.txt
 └── .gitignore
 ```
@@ -65,10 +68,8 @@ python smart_pillbox_opencv.py --snapshot outputs/demo.png
 - `r`：循环切换早上药格药片数，`0 -> 1 -> 2 -> 3 -> 0`
 - `g`：循环切换中午药格药片数
 - `b`：循环切换晚上药格药片数
+- `Space`：模拟当前时段药格被取空，连续确认后生成 `TAKE_MED_EVENT`
 - `t`：切换当前服药时段，`Morning -> Noon -> Evening`
-- `h`：模拟手部送药入口动作
-- `s`：模拟喝水吞咽动作
-- `i`：恢复空闲动作
 - `q`：退出程序
 
 摄像头画面默认会水平镜像，方便现场演示。如果要关闭镜像：
@@ -127,7 +128,7 @@ class_counts
 roi
 ```
 
-这样业务逻辑不依赖具体模型，防错药、剂量校验、吞咽确认和硬件反馈都可以保持不变。
+这样业务逻辑不依赖具体模型，防错药、剂量校验、取药事件防抖和硬件反馈都可以保持不变。
 
 ## 免责声明
 
@@ -157,7 +158,7 @@ Suggested full-system story for presentation:
 
 ```text
 Python OpenCV / YOLO smart pillbox backend
-        -> pill count, slot status, alerts, swallow events
+        -> pill count, debounced take events, slot status, alerts
         -> future API layer such as Flask or FastAPI
         -> frontend mobile caregiver dashboard
 ```

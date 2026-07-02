@@ -1,4 +1,7 @@
 # 角色设定
+
+> Legacy note: 本文件是 V3.0 历史需求草案，里面的吞咽确认、动作模拟和 `swallow_duration` 逻辑已经被 V4.0 废弃。当前交付版本以 `docs/v4_yolo_opencv_hybrid_upgrade.md` 和 `docs/v4_flowchart_mermaid.md` 为准：系统只基于 `pill_count` 的稳定下降生成取药事件。
+
 你是一位资深的 Python 架构师与计算机视觉专家。请基于我已经跑通的 `smart_pillbox_opencv2.0.py` 代码，进行 V3.0 版本的核心业务逻辑升级与架构重构。
 
 # 核心目标

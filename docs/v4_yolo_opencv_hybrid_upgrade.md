@@ -1,13 +1,14 @@
-# Smart Pillbox V4 Refactor Plan
+# Smart Pillbox V4.0 Detection Stabilization Plan
 
-## No Swallow Version
+## No Swallow / Pill Count Only Version
 
 本版本根据小组讨论移除所有虚假的行为识别和吞咽确认逻辑。系统不再声称能用单摄像头判断“是否吞咽”，而是聚焦更可靠、可落地的任务：
 
 ```text
 Roboflow / YOLO = 药丸视觉检测
 OpenCV ROI = 药格空间映射
-Event Generator = 药丸数量变化 -> 取药事件
+Temporal Smoothing = pill_count 时间稳定
+Event Debounce = 连续下降确认 -> 取药事件
 Safety State Machine = 正确取药 / 错格 / 剂量异常 / 漏服提醒
 ```
 
@@ -55,13 +56,27 @@ Safety State Machine = 正确取药 / 错格 / 剂量异常 / 漏服提醒
 
 ## 3. New Core: Event Generator
 
-系统核心事件只来自药丸数量变化：
+系统核心事件只来自药丸数量变化，但不能再使用单帧差值直接触发。新的事件链路是：
 
 ```python
-if previous_pill_count > current_pill_count:
-    taken_count = previous_pill_count - current_pill_count
+stable_count = ema(raw_pill_count)
+
+if baseline_count - stable_count >= 1:
+    confirm_frames += 1
+else:
+    confirm_frames = 0
+
+if confirm_frames >= 2:
+    taken_count = baseline_count - stable_count
     generate_event("TAKE_MED_EVENT")
 ```
+
+行为定义：
+
+- `TAKE_MED_EVENT` 必须满足 `pill_count` 连续下降，且同一下降结果持续至少 2 帧。
+- `MISSED_RISK` 表示当前时段超过提醒时间仍没有已确认取药事件。
+- `WRONG_SLOT` 表示非当前时间段药格发生已确认取药事件。
+- `UNCERTAIN` 表示检测置信度过低时暂停成功/失败判定，不写入成功记录。
 
 事件字段建议：
 
@@ -105,7 +120,48 @@ MONITORING
 
 ---
 
-## 5. Decision Logic
+## 5. Detection Stabilization Fixes
+
+### Temporal Smoothing
+
+`MedicationTracker` 对每个药格维护 EMA 计数：
+
+```python
+stable = alpha * current + (1 - alpha) * previous
+```
+
+这样可以降低 `pill_count` 在相邻帧之间的随机波动，避免 UI 和状态机频繁跳变。
+
+### Event Debounce
+
+取药事件不再由一帧 `previous > current` 触发。系统维护 `event_baseline_count` 和 `pending_take_event`，只有同一下降结果连续出现至少 2 帧，才确认 `TAKE_MED_EVENT`。
+
+### ROI Stability
+
+OpenCV fallback 检测对 mask 做轻量增强：
+
+```python
+mask = cv2.GaussianBlur(mask, (9, 9), 0)
+mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+```
+
+圆形 ROI 也使用轻微软边界，减少药丸边缘被硬切造成的误检/漏检。
+
+### Contour Filtering Tuning
+
+轮廓过滤从过低面积阈值升级为：
+
+```python
+contourArea > total_pixels * 0.02
+0.45 <= aspect_ratio <= 2.2
+fill_ratio >= 0.42
+```
+
+同时收紧浅色药丸 HSV 范围，降低白色背景和小光斑误识别。
+
+---
+
+## 6. Decision Logic
 
 ```python
 if confidence < threshold:
@@ -126,7 +182,7 @@ else:
 
 ---
 
-## 6. Output Feedback
+## 7. Output Feedback
 
 系统输出只围绕取药事件和风险：
 
@@ -142,7 +198,7 @@ else:
 
 ---
 
-## 7. Roboflow Usage
+## 8. Roboflow Usage
 
 当前主方案可以直接使用 Roboflow：
 
@@ -161,7 +217,7 @@ python smart_pillbox_opencv.py --detector roboflow
 
 ---
 
-## 8. Demo Tests
+## 9. Demo Tests
 
 ### Test 1: 正常取药
 
@@ -173,6 +229,8 @@ expected_count = 2
 => NORMAL_SUCCESS
 ```
 
+说明：`Morning pill_count: 2 -> 0` 必须连续确认至少 2 帧，才会生成 `TAKE_MED_EVENT`。
+
 ### Test 2: 错误孔位
 
 ```text
@@ -180,6 +238,8 @@ current_period = Morning
 Evening pill_count: 3 -> 2
 => LOCKED_WRONG_SLOT
 ```
+
+说明：错格也必须先形成已确认取药事件，未发生药丸移动时只做温和提醒或继续监控。
 
 ### Test 3: 剂量异常
 
@@ -209,7 +269,19 @@ confidence < threshold
 
 ---
 
-## 9. Presentation Positioning
+## 10. Current Problem Coverage
+
+| Problem | Fix |
+|---|---|
+| pill_count 抖动 | EMA 时间平滑 |
+| 单帧误触发 TAKE_EVENT | 连续 2 帧事件防抖 |
+| ROI 边缘误差 | mask 高斯平滑 + 软 ROI |
+| false positives | 提高 contourArea 阈值 + 形状过滤 |
+| 状态机频繁跳变 | 只接受稳定计数和已确认事件 |
+
+---
+
+## 11. Presentation Positioning
 
 答辩推荐说法：
 

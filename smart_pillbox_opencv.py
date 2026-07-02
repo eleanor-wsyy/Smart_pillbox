@@ -27,18 +27,18 @@ COLOR_RANGES = {
     "Morning": [
         (np.array([0, 100, 90]), np.array([10, 255, 255])),
         (np.array([170, 100, 90]), np.array([180, 255, 255])),
-        # 白色/米色药丸：低饱和度、高明度
-        (np.array([0, 0, 150]), np.array([180, 70, 255])),
+        # 白色/米色药丸：收紧低饱和度、高明度范围，降低浅色背景误检
+        (np.array([0, 0, 170]), np.array([180, 55, 255])),
     ],
     "Noon": [
         (np.array([35, 70, 70]), np.array([85, 255, 255])),
-        # 白色/米色药丸：低饱和度、高明度
-        (np.array([0, 0, 150]), np.array([180, 70, 255])),
+        # 白色/米色药丸：收紧低饱和度、高明度范围，降低浅色背景误检
+        (np.array([0, 0, 170]), np.array([180, 55, 255])),
     ],
     "Evening": [
         (np.array([90, 70, 70]), np.array([130, 255, 255])),
-        # 白色/米色药丸：低饱和度、高明度
-        (np.array([0, 0, 150]), np.array([180, 70, 255])),
+        # 白色/米色药丸：收紧低饱和度、高明度范围，降低浅色背景误检
+        (np.array([0, 0, 170]), np.array([180, 55, 255])),
     ],
 }
 
@@ -71,6 +71,9 @@ PRESENT_RATIO_THRESHOLD = 0.075
 MISSED_REMINDER_DELAY = 12.0
 DETECTION_CONFIDENCE_THRESHOLD = 0.28
 RECOVERY_DISPLAY_SECONDS = 2.5
+MIN_CONTOUR_AREA_RATIO = 0.02
+PILL_COUNT_EMA_ALPHA = 0.85
+TAKE_EVENT_CONFIRM_FRAMES = 2
 
 # V3.0：当前服药时间段上下文全局变量
 CURRENT_PERIOD = "Morning"
@@ -161,9 +164,12 @@ class PillDetector:
         for lower, upper in color_ranges:
             mask = cv2.bitwise_or(mask, cv2.inRange(hsv_roi, lower, upper))
 
+        mask = cv2.GaussianBlur(mask, (9, 9), 0)
+        _, mask = cv2.threshold(mask, 80, 255, cv2.THRESH_BINARY)
+
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         return mask
 
     def detect(self, frame, slot_key) -> SlotVisionResult:
@@ -174,15 +180,21 @@ class PillDetector:
         mask = self.build_color_mask(hsv_roi, self.color_ranges[slot_key])
 
         circle_mask = np.zeros(mask.shape, dtype=np.uint8)
-        cv2.circle(circle_mask, (cx - x1, cy - y1), radius - 4, 255, -1)
-        mask = cv2.bitwise_and(mask, circle_mask)
+        cv2.circle(circle_mask, (cx - x1, cy - y1), radius - 2, 255, -1)
+        soft_circle_mask = cv2.GaussianBlur(circle_mask, (11, 11), 0)
+        _, soft_circle_mask = cv2.threshold(soft_circle_mask, 32, 255, cv2.THRESH_BINARY)
+        mask = cv2.bitwise_and(mask, soft_circle_mask)
 
         colored_pixels = cv2.countNonZero(mask)
-        total_pixels = max(1, cv2.countNonZero(circle_mask))
+        total_pixels = max(1, cv2.countNonZero(soft_circle_mask))
         color_ratio = colored_pixels / total_pixels
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        valid_contours = [c for c in contours if cv2.contourArea(c) > total_pixels * 0.012]
+        min_area = total_pixels * MIN_CONTOUR_AREA_RATIO
+        valid_contours = [
+            c for c in contours
+            if cv2.contourArea(c) > min_area and self._contour_is_pill_like(c)
+        ]
 
         pill_count = len(valid_contours)
         present = pill_count > 0
@@ -196,6 +208,20 @@ class PillDetector:
             pill_count=pill_count,
             contours=offset_contours(valid_contours, x1, y1),
         )
+
+    @staticmethod
+    def _contour_is_pill_like(contour):
+        area = cv2.contourArea(contour)
+        if area <= 0:
+            return False
+
+        x, y, w, h = cv2.boundingRect(contour)
+        if w <= 0 or h <= 0:
+            return False
+
+        aspect_ratio = w / h
+        fill_ratio = area / max(1, w * h)
+        return 0.45 <= aspect_ratio <= 2.2 and fill_ratio >= 0.42
 
 
 class RoboflowPillDetector:
@@ -456,7 +482,10 @@ class MedicationTracker:
         self.last_pill_count = {key: 0 for key in self.slot_keys}
         self.last_taken_count = {key: 0 for key in self.slot_keys}
         self.wrong_period_alarm = {key: False for key in self.slot_keys}
-        self.last_frame_pill_count = {key: 0 for key in self.slot_keys}
+        self.stable_pill_count = {key: 0 for key in self.slot_keys}
+        self.ema_pill_count = {key: None for key in self.slot_keys}
+        self.event_baseline_count = {key: 0 for key in self.slot_keys}
+        self.pending_take_event = {key: None for key in self.slot_keys}
         self.missed_alarm_sent = {key: False for key in self.slot_keys}
         self.last_period = CURRENT_PERIOD
         self.period_started_at = time.monotonic()
@@ -478,17 +507,30 @@ class MedicationTracker:
                 self.wrong_period_alarm[key] = False
                 self.missed_alarm_sent[key] = False
                 self.confirmed[key] = False
+                self.pending_take_event[key] = None
+                self.event_baseline_count[key] = self.stable_pill_count[key]
             self.period_started_at = now
             self.last_period = CURRENT_PERIOD
             events.append(f"[INFO] 当前服药时段切换为 {SLOTS_CONFIG[CURRENT_PERIOD]['cn']}。")
 
         for key, result in vision_results.items():
-            previous_count = self.last_frame_pill_count[key]
-            current_count = result.pill_count
-            taken_count = max(0, previous_count - current_count)
-            take_event = previous_count > current_count
             expected = MEDICATION_PLAN[key]["expected_count"]
             uncertain = self._is_uncertain(result)
+            if uncertain:
+                current_count = self.stable_pill_count[key]
+                result.pill_count = current_count
+                result.present = current_count > 0
+                previous_count = self.event_baseline_count[key]
+                taken_count = 0
+                take_event = False
+                self.pending_take_event[key] = None
+                pending_confirmation = False
+            else:
+                current_count = self._update_stable_count(key, result.pill_count)
+                result.pill_count = current_count
+                result.present = current_count > 0
+                previous_count, taken_count, take_event = self._update_take_event_candidate(key, current_count)
+                pending_confirmation = self.pending_take_event[key] is not None
             status_event_emitted = False
 
             if take_event:
@@ -510,6 +552,8 @@ class MedicationTracker:
                 elif self.wrong_period_alarm[key] and result.present and current_count >= expected:
                     self.wrong_period_alarm[key] = False
                     self.recovery_until[key] = now + RECOVERY_DISPLAY_SECONDS
+                    self.event_baseline_count[key] = current_count
+                    self.pending_take_event[key] = None
                     feedback = SlotFeedback("recovery", "RECOVERY: PILLS RETURNED", (80, 240, 120))
                     events.append(f"[INFO] {SLOTS_CONFIG[key]['cn']} 药格已恢复，错格警报解除。")
                     status_event_emitted = True
@@ -519,6 +563,8 @@ class MedicationTracker:
                     feedback = SlotFeedback("recovery", "RECOVERY: BACK TO MONITOR", (80, 240, 120))
                 elif uncertain:
                     feedback = SlotFeedback("uncertain", "UNCERTAIN: ADJUST CAMERA", (0, 210, 255))
+                elif pending_confirmation:
+                    feedback = SlotFeedback("waiting", "VERIFYING TAKE EVENT", (60, 220, 255))
                 elif result.present:
                     self.last_pill_count[key] = current_count
                     feedback = self._build_loaded_feedback(result, expected)
@@ -552,6 +598,8 @@ class MedicationTracker:
                     status_event_emitted = True
                 elif self.confirmed[key] and current_count <= max(0, expected - self.last_taken_count[key]):
                     feedback = SlotFeedback("confirmed", f"TAKE EVENT OK: {self.last_taken_count[key]}", (80, 240, 120))
+                elif pending_confirmation:
+                    feedback = SlotFeedback("waiting", "VERIFYING TAKE EVENT", (60, 220, 255))
                 elif result.present:
                     self.last_pill_count[key] = current_count
                     if now - self.period_started_at >= MISSED_REMINDER_DELAY:
@@ -573,7 +621,6 @@ class MedicationTracker:
                 self.last_status[key] = feedback.status
 
             self.feedback[key] = feedback
-            self.last_frame_pill_count[key] = current_count
             self.previous_present[key] = result.present
 
         self.last_events = events
@@ -583,6 +630,47 @@ class MedicationTracker:
     def _is_uncertain(self, result):
         """只对检测到药丸但置信度偏低的画面暂停判定，避免把空药格误报为不确定。"""
         return result.present and 0.0 < result.confidence < DETECTION_CONFIDENCE_THRESHOLD
+
+    def _update_stable_count(self, slot_key, raw_count):
+        """用 EMA 抑制 pill_count 帧间抖动，再四舍五入为业务计数。"""
+        raw_count = max(0, int(raw_count))
+        previous_ema = self.ema_pill_count[slot_key]
+        if previous_ema is None:
+            ema = float(raw_count)
+        else:
+            ema = PILL_COUNT_EMA_ALPHA * raw_count + (1.0 - PILL_COUNT_EMA_ALPHA) * previous_ema
+
+        stable_count = max(0, int(round(ema)))
+        self.ema_pill_count[slot_key] = ema
+        self.stable_pill_count[slot_key] = stable_count
+
+        if stable_count > self.event_baseline_count[slot_key]:
+            self.event_baseline_count[slot_key] = stable_count
+            self.pending_take_event[slot_key] = None
+
+        return stable_count
+
+    def _update_take_event_candidate(self, slot_key, current_count):
+        """只有同一数量下降持续多帧，才确认 TAKE_MED_EVENT。"""
+        baseline = self.event_baseline_count[slot_key]
+        if current_count >= baseline:
+            self.pending_take_event[slot_key] = None
+            return baseline, 0, False
+
+        taken_count = baseline - current_count
+        pending = self.pending_take_event[slot_key]
+        if pending and pending["from"] == baseline and pending["to"] == current_count:
+            pending["frames"] += 1
+        else:
+            pending = {"from": baseline, "to": current_count, "taken": taken_count, "frames": 1}
+            self.pending_take_event[slot_key] = pending
+
+        if pending["frames"] < TAKE_EVENT_CONFIRM_FRAMES:
+            return baseline, taken_count, False
+
+        self.event_baseline_count[slot_key] = current_count
+        self.pending_take_event[slot_key] = None
+        return baseline, taken_count, True
 
     @staticmethod
     def _build_loaded_feedback(result, expected):
@@ -1091,10 +1179,10 @@ def print_intro(use_camera):
     print("  r     : 循环切换“早上(Morning)”药格药片数 (0->1->2->3->0)")
     print("  g     : 循环切换“中午(Noon)”药格药片数")
     print("  b     : 循环切换“晚上(Evening)”药格药片数")
-    print("  Space : 模拟当前时段药格被取空，生成 TAKE_MED_EVENT")
+    print("  Space : 模拟当前时段药格被取空，连续确认后生成 TAKE_MED_EVENT")
     print("  t     : 循环切换当前系统服药时间段 (Morning->Noon->Evening->Morning)")
     print("  q     : 退出程序")
-    print("模式：", "摄像头识别 + 键盘动作模拟" if use_camera else "无摄像头模拟器")
+    print("模式：", "摄像头识别 + 键盘药格模拟" if use_camera else "无摄像头模拟器")
     print("==================================================")
 
 
@@ -1147,7 +1235,7 @@ def handle_keypress(key, slot_states):
         print(f"模拟器更新：晚上药格内药片数量循环设为 {slot_states['Evening']}")
     elif key == ord(" "):
         slot_states[CURRENT_PERIOD] = 0
-        print(f"模拟器更新：当前时段【{CURRENT_PERIOD}】药格已取空，将生成 TAKE_MED_EVENT")
+        print(f"模拟器更新：当前时段【{CURRENT_PERIOD}】药格已取空，连续确认后生成 TAKE_MED_EVENT")
         
     elif key == ord("t"):
         if CURRENT_PERIOD == "Morning":
@@ -1222,7 +1310,10 @@ def save_demo_snapshot(path, detector=None):
     # 模拟拿走一颗药
     slot_states["Evening"] = 2
     frame = draw_simulator_scene(slot_states)
-    processed, _, _, events = process_frame(frame, tracker, detector)
+    events = []
+    processed = frame
+    for _ in range(TAKE_EVENT_CONFIRM_FRAMES):
+        processed, _, _, events = process_frame(frame, tracker, detector)
     
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

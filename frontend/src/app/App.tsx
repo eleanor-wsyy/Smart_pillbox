@@ -8,7 +8,12 @@ import {
 
 // ─── Design tokens ────────────────────────────────────────────────
 const C = {
-  bg: "linear-gradient(160deg, #E0EFF0 0%, #E8E7E2 48%, #E8E4F0 100%)",
+  bgFallback: "#FFEEEE",
+  bgWebkit: "-webkit-linear-gradient(to right, #DDEFBB, #FFEEEE)",
+  bg: "linear-gradient(to right, #DDEFBB, #FFEEEE)",
+  headerBgFallback: "#FFEEEE",
+  headerBgWebkit: "-webkit-linear-gradient(to right, #DDEFBB, #FFEEEE)",
+  headerBg: "linear-gradient(to right, #DDEFBB, #FFEEEE)",
   card: "rgba(255,255,255,0.72)",
   cardSolid: "#FFFFFF",
   teal: "#3A8882",
@@ -47,10 +52,10 @@ const GLASS: React.CSSProperties = {
 };
 
 const GLASS_DARK: React.CSSProperties = {
-  background: "rgba(0,0,0,0.16)",
+  background: "rgba(255,255,255,0.38)",
   backdropFilter: "blur(12px) saturate(150%)",
   WebkitBackdropFilter: "blur(12px) saturate(150%)",
-  border: "1px solid rgba(255,255,255,0.22)",
+  border: "1px solid rgba(255,255,255,0.62)",
 };
 
 const GLASS_TEAL: React.CSSProperties = {
@@ -62,51 +67,57 @@ const GLASS_TEAL: React.CSSProperties = {
 
 type Screen = "dashboard" | "live" | "alerts" | "history" | "settings";
 
+const MEDICINE_PLAN = [
+  { label: "早上", en: "AM", time: "08:00", medicine: "多奈哌齐片", dose: "1 片", type: "片剂", status: "已完成", color: C.green, bg: C.greenBg, filled: true },
+  { label: "中午", en: "PM", time: "12:00", medicine: "美金刚片", dose: "1 片", type: "片剂", status: "待服用", color: C.amber, bg: C.amberBg, filled: false },
+  { label: "晚上", en: "EVE", time: "20:00", medicine: "卡巴拉汀胶囊", dose: "1 粒", type: "胶囊", status: "待服用", color: C.amber, bg: C.amberBg, filled: false },
+];
+
 const ALERTS = [
   {
     severity: "严重", sevColor: C.red, sevBg: C.redBg, sevBorder: C.redBorder,
-    iconType: "octagon", title: "错误药格锁定",
-    desc: "当前是早上时段，Roboflow 检测到晚上药格药丸移动，系统已阻断成功记录",
-    time: "08:02", slot: "晚上药格",
-    action: "立即放回药丸，等待系统恢复", resolved: false,
+    iconType: "octagon", title: "拿错药格",
+    desc: "现在应该吃早上药，但晚上药格被打开了。请先把晚上药放回去，再取早上药。",
+    time: "08:02", slot: "早上药：多奈哌齐片",
+    action: "把晚上药放回原位，再确认早上药是否已服用", resolved: false,
   },
   {
     severity: "警告", sevColor: C.orange, sevBg: C.orangeBg, sevBorder: C.orangeBorder,
-    iconType: "triangle", title: "剂量异常",
-    desc: "早上处方预期 2 粒，视觉检出 1 粒，暂不记录成功服药",
-    time: "07:55", slot: "早上药格",
-    action: "请检查药格，确认实际数量", resolved: false,
+    iconType: "triangle", title: "药量不对",
+    desc: "早上药应该是 1 片多奈哌齐片。现在看起来数量不对，请帮忙确认。",
+    time: "07:55", slot: "早上药：多奈哌齐片",
+    action: "检查早上药格，确认是否少放或少取了一片", resolved: false,
   },
   {
     severity: "提醒", sevColor: C.amber, sevBg: C.amberBg, sevBorder: C.amberBorder,
-    iconType: "info", title: "漏服风险",
-    desc: "服药时段内未检测到药丸数量减少，系统提醒老人取药",
-    time: "07:58", slot: "早上药格",
-    action: "语音提醒老人按时取药", resolved: false,
+    iconType: "info", title: "可能还没吃药",
+    desc: "早上药还没有取出。可以打电话或语音提醒外婆。",
+    time: "07:58", slot: "早上药：多奈哌齐片",
+    action: "提醒外婆现在吃早上药", resolved: false,
   },
   {
     severity: "待确认", sevColor: C.amber, sevBg: C.amberBg, sevBorder: C.amberBorder,
-    iconType: "info", title: "视觉不确定",
-    desc: "检测置信度低或摄像头画面被遮挡，系统暂停成功/失败判定",
-    time: "08:04", slot: "摄像头画面",
-    action: "调整药盒位置或摄像头角度", resolved: false,
+    iconType: "info", title: "看不清药盒",
+    desc: "药盒位置有遮挡，暂时看不清药量。请把药盒放正或擦一下镜头。",
+    time: "08:04", slot: "药盒画面",
+    action: "把药盒放正，确认药格没有被遮挡", resolved: false,
   },
   {
     severity: "已解决", sevColor: C.green, sevBg: C.greenBg, sevBorder: C.greenBorder,
-    iconType: "check", title: "错误药格已恢复",
-    desc: "药丸已放回，系统从 RECOVERY 回到 MONITORING",
-    time: "昨天 12:03", slot: "中午药格",
+    iconType: "check", title: "已放回正确药格",
+    desc: "中午药已放回，昨天的用药记录已恢复正常。",
+    time: "昨天 12:03", slot: "中午药：美金刚片",
     action: "", resolved: true,
   },
 ];
 
 const SAFETY_STATES = [
-  { key: "MONITORING", label: "等待取药事件", color: C.teal, bg: C.tealBg },
-  { key: "LOCKED_WRONG_SLOT", label: "错误药格锁定", color: C.red, bg: C.redBg },
-  { key: "WARNING_DOSAGE", label: "剂量异常", color: C.orange, bg: C.orangeBg },
-  { key: "MISSED_RISK", label: "漏服提醒", color: C.amber, bg: C.amberBg },
-  { key: "UNCERTAIN", label: "视觉不确定", color: C.amber, bg: C.amberBg },
-  { key: "RECOVERY", label: "恢复流程", color: C.green, bg: C.greenBg },
+  { key: "正常看护", label: "药盒连接正常，会按时提醒", color: C.teal, bg: C.tealBg },
+  { key: "拿错药格", label: "会提醒先放回正确药格", color: C.red, bg: C.redBg },
+  { key: "药量不对", label: "会提示少拿或多拿了几粒", color: C.orange, bg: C.orangeBg },
+  { key: "可能漏服", label: "超时未取药会通知家属", color: C.amber, bg: C.amberBg },
+  { key: "看不清楚", label: "药盒被遮挡时需要确认", color: C.amber, bg: C.amberBg },
+  { key: "已恢复", label: "处理后记录恢复正常", color: C.green, bg: C.greenBg },
 ];
 
 // ─── Blob background per screen ──────────────────────────────────
@@ -254,7 +265,7 @@ function StatusBar() {
 function BottomNav({ current, onChange }: { current: Screen; onChange: (s: Screen) => void }) {
   const tabs: { id: Screen; label: string; Icon: React.ComponentType<{ size: number; strokeWidth: number }> }[] = [
     { id: "dashboard", label: "首页", Icon: Home },
-    { id: "live", label: "实时", Icon: Camera },
+    { id: "live", label: "药盒", Icon: Camera },
     { id: "alerts", label: "提醒", Icon: Bell },
     { id: "history", label: "记录", Icon: CalendarDays },
     { id: "settings", label: "设置", Icon: Settings },
@@ -305,10 +316,12 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
   const r = 52, circ = 2 * Math.PI * r;
 
   return (
-    <div style={{ paddingBottom: 20 }}>
+    <div style={{ paddingBottom: 36 }}>
       {/* Gradient teal header */}
       <div style={{
-        background: "linear-gradient(135deg, #3E9890 0%, #2F7A74 55%, #3A8A90 100%)",
+        background: C.headerBgFallback,
+        WebkitBackgroundImage: C.headerBgWebkit,
+        backgroundImage: C.headerBg,
         padding: "20px 18px 36px",
         position: "relative", overflow: "hidden",
       }}>
@@ -332,20 +345,20 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
                 ...GLASS_DARK,
                 display: "flex", alignItems: "center", justifyContent: "center",
               }}>
-                <User size={15} color="white" />
+                <User size={15} color={C.teal} />
               </div>
-              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.72)" }}>监护对象</span>
+              <span style={{ fontSize: 13, color: C.fgMid }}>监护对象</span>
             </div>
-            <div style={{ fontSize: 28, fontWeight: 700, color: "white", lineHeight: 1.1 }}>外婆</div>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.68)", marginTop: 5 }}>V4 安全状态机 · 早晨服药时段</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: C.fg, lineHeight: 1.1 }}>外婆</div>
+            <div style={{ fontSize: 13, color: C.fgMid, marginTop: 5 }}>今天已服早上药，下一次 12:00</div>
           </div>
           <div style={{
             display: "flex", alignItems: "center", gap: 6,
             ...GLASS_DARK,
             borderRadius: 20, padding: "5px 12px",
           }}>
-            <Dot color="#7FFCE0" pulse />
-            <span style={{ fontSize: 12, color: "white", fontWeight: 500 }}>设备在线</span>
+            <Dot color={C.green} pulse />
+            <span style={{ fontSize: 12, color: C.fg, fontWeight: 500 }}>设备在线</span>
           </div>
         </div>
       </div>
@@ -354,7 +367,7 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
       <div style={{ padding: "0 16px", marginTop: -22 }}>
         <GlassCard style={{ padding: "18px 20px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-            <svg width={108} height={108} viewBox="0 0 108 108" style={{ flexShrink: 0 }}>
+            <svg width={108} height={108} viewBox="0 0 108 108" style={{ flexShrink: 0, overflow: "visible" }}>
               {/* Track glow */}
               <circle cx="54" cy="54" r={r} fill="none" stroke="rgba(58,136,130,0.12)" strokeWidth="13" />
               <circle cx="54" cy="54" r={r} fill="none" stroke="rgba(220,220,215,0.6)" strokeWidth="9" />
@@ -371,16 +384,16 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
             </svg>
 
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12, color: C.fgMuted, marginBottom: 4 }}>当前状态</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.fg, marginBottom: 12 }}>MONITORING</div>
+              <div style={{ fontSize: 12, color: C.fgMuted, marginBottom: 4 }}>今天已完成</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.fg, marginBottom: 12 }}>1 / 3 次</div>
               <div style={{
                 display: "flex", alignItems: "center", gap: 8,
                 ...GLASS_TEAL, borderRadius: 12, padding: "8px 12px",
               }}>
                 <Clock size={13} color={C.amber} style={{ flexShrink: 0 }} />
                 <div>
-                  <div style={{ fontSize: 11, color: C.fgMuted }}>下次提醒</div>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: C.amber }}>08:00</div>
+                  <div style={{ fontSize: 11, color: C.fgMuted }}>下一次：美金刚片</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: C.amber }}>12:00</div>
                 </div>
               </div>
             </div>
@@ -390,13 +403,9 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
 
       {/* Slot cards */}
       <div style={{ padding: "14px 16px 0" }}>
-        <SectionHeader>今日药格状态</SectionHeader>
+        <SectionHeader>今日用药</SectionHeader>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {[
-            { label: "早上", en: "AM", count: 2, total: 2, status: "已准备", color: C.green, bg: C.greenBg, filled: true },
-            { label: "中午", en: "PM", count: 1, total: 1, status: "待时段", color: C.amber, bg: C.amberBg, filled: false },
-            { label: "晚上", en: "EVE", count: 3, total: 3, status: "待时段", color: C.amber, bg: C.amberBg, filled: false },
-          ].map((s, i) => (
+          {MEDICINE_PLAN.map((s, i) => (
             <GlassCard key={i} style={{ padding: "13px 16px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <div style={{
@@ -411,7 +420,7 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
-                    <span style={{ fontSize: 15, fontWeight: 600, color: C.fg }}>{s.count} / {s.total} 粒</span>
+                    <span style={{ fontSize: 15, fontWeight: 600, color: C.fg }}>{s.medicine}</span>
                     <span style={{
                       fontSize: 12, fontWeight: 500, color: s.color,
                       background: s.bg, padding: "2px 10px", borderRadius: 99,
@@ -419,6 +428,7 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
                       border: "1px solid rgba(255,255,255,0.5)",
                     }}>{s.status}</span>
                   </div>
+                  <div style={{ fontSize: 12, color: C.fgMuted, marginBottom: 7 }}>{s.time} · {s.dose}</div>
                   <div style={{ height: 4, background: "rgba(220,218,214,0.6)", borderRadius: 2 }}>
                     <div style={{
                       width: s.filled ? "100%" : "0%", height: "100%",
@@ -435,7 +445,7 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
       </div>
 
       <div style={{ padding: "14px 16px 0" }}>
-        <SectionHeader>V4 安全状态</SectionHeader>
+        <SectionHeader>需要关注</SectionHeader>
         <GlassCard style={{ padding: "13px 14px" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             {SAFETY_STATES.map((s) => (
@@ -447,7 +457,7 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
                 minHeight: 56,
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
-                  <Dot color={s.color} pulse={s.key === "MONITORING"} />
+                  <Dot color={s.color} pulse={s.key === "正常看护"} />
                   <span style={{ fontSize: 11, color: s.color, fontWeight: 700 }}>{s.key}</span>
                 </div>
                 <div style={{ fontSize: 12, color: C.fgMid, lineHeight: 1.25 }}>{s.label}</div>
@@ -470,8 +480,8 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
               <CheckCircle2 size={17} color={C.green} />
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 11, color: C.fgMuted }}>感知后端</div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>Roboflow YOLO + OpenCV ROI</div>
+              <div style={{ fontSize: 11, color: C.fgMuted }}>药盒正在看护中</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>吃错、漏吃或药量不对会提醒</div>
             </div>
             <button onClick={() => onNav("alerts")} style={{ background: "none", border: "none", cursor: "pointer", color: C.fgMuted }}>
               <ChevronRight size={18} />
@@ -490,7 +500,7 @@ function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
           display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
           boxShadow: "0 4px 16px rgba(58,136,130,0.35), 0 1px 3px rgba(0,0,0,0.1)",
         }}>
-          <Camera size={15} />查看实时画面
+          <Camera size={15} />查看药盒画面
         </button>
         <button style={{
           flex: 1, padding: "13px", ...GLASS,
@@ -594,11 +604,11 @@ function LiveScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   return (
-    <div style={{ paddingBottom: 20 }}>
+    <div style={{ paddingBottom: 36 }}>
       <div style={{ padding: "16px 16px 10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
-          <h2 style={{ fontSize: 20, fontWeight: 700, color: C.fg, margin: 0 }}>实时监控</h2>
-          <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 2 }}>Memory Echo Pillbox</div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: C.fg, margin: 0 }}>药盒画面</h2>
+          <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 2 }}>看今天的药有没有准备好</div>
         </div>
         <button
           onClick={() => { setRefreshing(true); setTimeout(() => setRefreshing(false), 1500); }}
@@ -647,10 +657,10 @@ function LiveScreen() {
 
           <div style={{ position: "absolute", bottom: 18, left: 10, right: 10, display: "flex", justifyContent: "space-between" }}>
             <span style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", color: "#4ABFA0", fontSize: 9.5, fontFamily: "monospace", padding: "2px 7px", borderRadius: 4 }}>
-              Roboflow · pill-detection-fnftd/3
+              早上药已取出
             </span>
             <span style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", color: "#6A8FA0", fontSize: 9.5, fontFamily: "monospace", padding: "2px 7px", borderRadius: 4 }}>
-              Morning · MONITORING
+              下一次 12:00
             </span>
           </div>
         </div>
@@ -658,41 +668,35 @@ function LiveScreen() {
 
       {/* Status chips */}
       <div style={{ display: "flex", gap: 7, padding: "10px 16px 0", flexWrap: "wrap" }}>
-        <Chip color={C.teal} bg="rgba(234,244,243,0.8)">检测后端: Roboflow YOLO</Chip>
-        <Chip color={C.fgMid} bg="rgba(242,241,238,0.8)">空间映射: OpenCV ROI</Chip>
-        <Chip color={C.amber} bg={C.amberBg}>状态机: MONITORING</Chip>
+        <Chip color={C.green} bg={C.greenBg}>已吃：多奈哌齐片</Chip>
+        <Chip color={C.amber} bg={C.amberBg}>下一次：美金刚片</Chip>
+        <Chip color={C.fgMid} bg="rgba(242,241,238,0.8)">今天还剩 2 次</Chip>
       </div>
 
       {/* Detection results */}
       <div style={{ padding: "12px 16px 0" }}>
-        <SectionHeader>视觉检测结果</SectionHeader>
+        <SectionHeader>药格情况</SectionHeader>
         <GlassCard>
-          {[
-            { slot: "早上", type: "tablets", count: 2, conf: 0.93, ok: true, state: "ready" },
-            { slot: "中午", type: "tablets", count: 1, conf: 0.91, ok: false, state: "not current" },
-            { slot: "晚上", type: "capsules", count: 3, conf: 0.89, ok: false, state: "not current" },
-          ].map((row, i) => (
+          {MEDICINE_PLAN.map((row, i) => (
             <div key={i} style={{
               padding: "11px 16px",
               borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none",
               display: "flex", alignItems: "center", gap: 12,
             }}>
-              <Dot color={row.ok ? C.green : C.amber} />
+              <Dot color={row.filled ? C.green : C.amber} />
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>{row.slot}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>{row.label} {row.time}</span>
                   <span style={{
-                    fontSize: 11, color: row.ok ? C.green : C.amber,
-                    background: row.ok ? C.greenBg : C.amberBg,
+                    fontSize: 11, color: row.filled ? C.green : C.amber,
+                    background: row.filled ? C.greenBg : C.amberBg,
                     padding: "1px 9px", borderRadius: 99,
                     backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
                     border: "1px solid rgba(255,255,255,0.5)",
-                  }}>{row.ok ? "已准备" : "待时段"}</span>
+                  }}>{row.status}</span>
                 </div>
                 <div style={{ display: "flex", gap: 10, marginTop: 3 }}>
-                  <span style={{ fontSize: 12, color: C.fgMuted }}>{row.type} · {row.count} 粒</span>
-                  <span style={{ fontSize: 12, fontFamily: "monospace", color: C.teal }}>conf {row.conf}</span>
-                  <span style={{ fontSize: 12, fontFamily: "monospace", color: C.fgMuted }}>{row.state}</span>
+                  <span style={{ fontSize: 12, color: C.fgMuted }}>{row.medicine} · {row.dose}</span>
                 </div>
               </div>
             </div>
@@ -702,12 +706,12 @@ function LiveScreen() {
 
       {/* Event log */}
       <div style={{ padding: "12px 16px 0" }}>
-        <SectionHeader>事件日志</SectionHeader>
+        <SectionHeader>今天发生了什么</SectionHeader>
         <GlassCard style={{ padding: "4px 0" }}>
           {[
-            { time: "07:58", text: "Roboflow 检测到早上药格 tablets × 2", color: C.green },
-            { time: "08:00", text: "OpenCV ROI 映射到 Morning，等待 pill_count 变化", color: C.amber },
-            { time: "08:01", text: "成功条件：正确时段 + 正确药格 + 取药数量匹配", color: C.teal },
+            { time: "07:58", text: "早上药已准备好：多奈哌齐片，1 片", color: C.green },
+            { time: "08:00", text: "已提醒外婆吃早上药", color: C.amber },
+            { time: "08:01", text: "早上药已取出，今天已完成 1 次", color: C.teal },
           ].map((ev, i) => (
             <div key={i} style={{
               padding: "9px 16px",
@@ -755,10 +759,10 @@ function AlertsScreen({ setAlertModal }: {
   const active = ALERTS.filter(a => !a.resolved);
 
   return (
-    <div style={{ paddingBottom: 20 }}>
+    <div style={{ paddingBottom: 36 }}>
       <div style={{ padding: "16px 16px 12px" }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.fg, margin: 0 }}>异常提醒</h2>
-        <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 2 }}>{active.length} 条未处理 · 今日</div>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.fg, margin: 0 }}>用药提醒</h2>
+        <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 2 }}>今天还有 {active.length} 条需要关注</div>
       </div>
 
       <div style={{ padding: "0 16px" }}>
@@ -876,9 +880,9 @@ function AlertModal({ index, onClose }: { index: number; onClose: () => void }) 
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
           {[
-            { label: "触发时间", value: alert.time },
-            { label: "涉及药格", value: alert.slot },
-            ...(alert.action ? [{ label: "建议操作", value: alert.action }] : []),
+            { label: "提醒时间", value: alert.time },
+            { label: "相关药品", value: alert.slot },
+            ...(alert.action ? [{ label: "建议做法", value: alert.action }] : []),
           ].map(({ label, value }) => (
             <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <span style={{ fontSize: 13, color: C.fgMuted }}>{label}</span>
@@ -896,7 +900,7 @@ function AlertModal({ index, onClose }: { index: number; onClose: () => void }) 
             display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
             boxShadow: "0 4px 16px rgba(58,136,130,0.35)",
           }}>
-            <Check size={15} />标记已处理
+            <Check size={15} />我已处理
           </button>
           <button style={{
             flex: 1, padding: "13px", ...GLASS,
@@ -914,15 +918,15 @@ function AlertModal({ index, onClose }: { index: number; onClose: () => void }) 
 // ─── Screen 4 · History ──────────────────────────────────────────
 
 const HISTORY_EVENTS = [
-  { time: "08:03", text: "早上取药事件已确认", sub: "正确时段 + 正确药格 + 取药数量匹配", color: C.green, iconType: "check" },
-  { time: "08:01", text: "生成 TAKE_MED_EVENT", sub: "pill_count 2 -> 0，取出 2 粒", color: C.teal, iconType: "activity" },
-  { time: "08:00", text: "Roboflow 检测到早上药格数量变化", sub: "OpenCV ROI 映射通过", color: C.amber, iconType: "dot" },
-  { time: "12:00", text: "中午服药待确认", sub: "时段未到", color: C.fgMuted, iconType: "clock" },
+  { time: "08:03", text: "早上药已确认服用", sub: "多奈哌齐片，1 片", color: C.green, iconType: "check" },
+  { time: "08:01", text: "早上药已取出", sub: "药盒显示已取出 1 片", color: C.teal, iconType: "activity" },
+  { time: "08:00", text: "已提醒外婆吃早上药", sub: "08:00 提醒：多奈哌齐片", color: C.amber, iconType: "dot" },
+  { time: "12:00", text: "中午药待服用", sub: "12:00 提醒：美金刚片，1 片", color: C.fgMuted, iconType: "clock" },
 ];
 
 function HistoryScreen({ tab, setTab }: { tab: 0 | 1 | 2; setTab: (t: 0 | 1 | 2) => void }) {
   return (
-    <div style={{ paddingBottom: 20 }}>
+    <div style={{ paddingBottom: 36 }}>
       <div style={{ padding: "16px 16px 10px" }}>
         <h2 style={{ fontSize: 20, fontWeight: 700, color: C.fg, margin: 0 }}>用药记录</h2>
       </div>
@@ -978,7 +982,7 @@ function HistoryScreen({ tab, setTab }: { tab: 0 | 1 | 2; setTab: (t: 0 | 1 | 2)
 
       {/* Timeline */}
       <div style={{ padding: "0 16px" }}>
-        <SectionHeader>事件时间线</SectionHeader>
+        <SectionHeader>今天发生了什么</SectionHeader>
         <GlassCard>
           {HISTORY_EVENTS.map((ev, i) => (
             <div key={i} style={{
@@ -1025,18 +1029,18 @@ function SettingsScreen({
   setToggles: React.Dispatch<React.SetStateAction<{ wrongSlot: boolean; dosage: boolean; missed: boolean; uncertain: boolean }>>;
 }) {
   return (
-    <div style={{ paddingBottom: 24 }}>
+    <div style={{ paddingBottom: 40 }}>
       <div style={{ padding: "16px 16px 12px" }}>
         <h2 style={{ fontSize: 20, fontWeight: 700, color: C.fg, margin: 0 }}>药盒设置</h2>
       </div>
 
       <div style={{ padding: "0 16px 14px" }}>
-        <SectionHeader>设备状态</SectionHeader>
+        <SectionHeader>药盒状态</SectionHeader>
         <GlassCard>
           {[
-            { label: "摄像头状态", value: "在线", valueColor: C.green, dot: true },
-            { label: "检测模式", value: "Roboflow YOLO", valueColor: C.teal, dot: false },
-            { label: "空间映射", value: "OpenCV ROI", valueColor: C.fgMid, dot: false },
+            { label: "药盒连接", value: "正常", valueColor: C.green, dot: true },
+            { label: "提醒方式", value: "声音 + 手机通知", valueColor: C.teal, dot: false },
+            { label: "药盒画面", value: "可查看", valueColor: C.fgMid, dot: false },
           ].map((item, i) => (
             <div key={i} style={{ padding: "13px 16px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 14, color: C.fg }}>{item.label}</span>
@@ -1052,18 +1056,14 @@ function SettingsScreen({
       <div style={{ padding: "0 16px 14px" }}>
         <SectionHeader>服药计划</SectionHeader>
         <GlassCard>
-          {[
-            { time: "早上 08:00", pills: "2 粒", type: "片剂" },
-            { time: "中午 12:00", pills: "1 粒", type: "片剂" },
-            { time: "晚上 20:00", pills: "3 粒", type: "胶囊" },
-          ].map((s, i) => (
+          {MEDICINE_PLAN.map((s, i) => (
             <div key={i} style={{ padding: "13px 16px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ width: 40, height: 40, borderRadius: 12, background: "rgba(234,244,243,0.85)", border: "1px solid rgba(255,255,255,0.65)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
                 <Clock size={16} color={C.teal} />
               </div>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>{s.time}</div>
-                <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 1 }}>{s.pills} · {s.type}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>{s.label} {s.time}</div>
+                <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 1 }}>{s.medicine} · {s.dose} · {s.type}</div>
               </div>
               <ChevronRight size={16} color={C.fgMuted} />
             </div>
@@ -1075,10 +1075,10 @@ function SettingsScreen({
         <SectionHeader>通知设置</SectionHeader>
         <GlassCard>
           {[
-            { label: "拿错药格立即通知", key: "wrongSlot" as const, desc: "检测到错误取药时" },
-            { label: "剂量异常通知", key: "dosage" as const, desc: "药量与处方不符时" },
-            { label: "未按时服药通知", key: "missed" as const, desc: "超时 15 分钟未服" },
-            { label: "视觉不确定通知", key: "uncertain" as const, desc: "低置信度或摄像头遮挡时" },
+            { label: "拿错药立即通知", key: "wrongSlot" as const, desc: "打开了不该吃的药格时" },
+            { label: "药量不对通知", key: "dosage" as const, desc: "取出的粒数和计划不一致时" },
+            { label: "未按时吃药通知", key: "missed" as const, desc: "超过 15 分钟还没取药时" },
+            { label: "看不清药盒通知", key: "uncertain" as const, desc: "药盒被遮挡或镜头看不清时" },
           ].map((item, i) => (
             <div key={i} style={{ padding: "13px 16px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -1123,7 +1123,7 @@ function SettingsScreen({
           display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
           boxShadow: "0 4px 18px rgba(58,136,130,0.38)",
         }}>
-          <Shield size={16} />保存设置
+          <Shield size={16} />保存用药设置
         </button>
       </div>
     </div>
@@ -1167,7 +1167,9 @@ export default function App() {
 
       <div style={{
         minHeight: "100vh",
-        background: "linear-gradient(145deg, #8CAEC0 0%, #9DBDAD 38%, #B0A8BE 72%, #A4B8B8 100%)",
+        background: C.bgFallback,
+        WebkitBackgroundImage: C.bgWebkit,
+        backgroundImage: C.bg,
         display: "flex", alignItems: "center", justifyContent: "center",
         padding: 24,
         fontFamily: "'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif",
@@ -1175,7 +1177,9 @@ export default function App() {
         {/* Phone frame */}
         <div style={{
           width: 393, height: 852,
-          background: C.bg,
+          background: C.bgFallback,
+          WebkitBackgroundImage: C.bgWebkit,
+          backgroundImage: C.bg,
           borderRadius: 52,
           border: "10px solid #0E0E0E",
           boxShadow: [

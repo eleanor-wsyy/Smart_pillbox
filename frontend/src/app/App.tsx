@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Home, Camera, Bell, Settings, CalendarDays,
   Phone, RefreshCw, ChevronRight, CheckCircle2,
@@ -72,6 +72,117 @@ const MEDICINE_PLAN = [
   { label: "中午", en: "PM", time: "12:00", medicine: "美金刚片", dose: "1 片", type: "片剂", status: "待服用", color: C.amber, bg: C.amberBg, filled: false },
   { label: "晚上", en: "EVE", time: "20:00", medicine: "卡巴拉汀胶囊", dose: "1 粒", type: "胶囊", status: "待服用", color: C.amber, bg: C.amberBg, filled: false },
 ];
+
+type SlotKey = "Morning" | "Noon" | "Evening";
+
+type ApiEvent = {
+  id: string;
+  time: string;
+  kind: "critical" | "warning" | "take" | "reward" | "info";
+  message: string;
+};
+
+type ApiSlot = {
+  key: SlotKey;
+  label: string;
+  pill_count: number;
+  expected_count: number;
+  confidence: number;
+  present: boolean;
+  status: string;
+  status_label: string;
+  message: string;
+  class_counts: Record<string, number>;
+  is_current: boolean;
+};
+
+type ApiStatus = {
+  online: boolean;
+  backend: string;
+  detector: string;
+  current_period: SlotKey;
+  current_period_label: string;
+  system_state: string;
+  completed_count: number;
+  total_count: number;
+  next_reminder: { label: string; time: string };
+  slots: Record<SlotKey, ApiSlot>;
+  events: ApiEvent[];
+  updated_at: string;
+};
+
+const SLOT_ORDER: SlotKey[] = ["Morning", "Noon", "Evening"];
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+
+const DEFAULT_STATUS: ApiStatus = {
+  online: false,
+  backend: "等待 FastAPI 连接",
+  detector: "OpenCV fallback",
+  current_period: "Morning",
+  current_period_label: "早上",
+  system_state: "NORMAL_CARE",
+  completed_count: 0,
+  total_count: 3,
+  next_reminder: { label: "早上", time: "08:00" },
+  slots: {
+    Morning: { key: "Morning", label: "早上", pill_count: 1, expected_count: 1, confidence: 1, present: true, status: "ready", status_label: "药量正确", message: "READY", class_counts: { tablets: 1 }, is_current: true },
+    Noon: { key: "Noon", label: "中午", pill_count: 1, expected_count: 1, confidence: 1, present: true, status: "ready", status_label: "待时段", message: "READY", class_counts: { tablets: 1 }, is_current: false },
+    Evening: { key: "Evening", label: "晚上", pill_count: 1, expected_count: 1, confidence: 1, present: true, status: "ready", status_label: "待时段", message: "READY", class_counts: { capsules: 1 }, is_current: false },
+  },
+  events: [],
+  updated_at: "",
+};
+
+function usePillboxStatus() {
+  const [status, setStatus] = useState<ApiStatus>(DEFAULT_STATUS);
+  const [connected, setConnected] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/status`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setStatus(await res.json());
+      setConnected(true);
+    } catch {
+      setConnected(false);
+    }
+  };
+
+  const post = async (path: string, body?: unknown) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}${path}`, {
+        method: "POST",
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setStatus(await res.json());
+      setConnected(true);
+    } catch {
+      setConnected(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    const id = window.setInterval(refresh, 1200);
+    return () => window.clearInterval(id);
+  }, []);
+
+  return { status, connected, loading, refresh, post };
+}
+
+function eventColor(kind: ApiEvent["kind"]) {
+  if (kind === "critical") return C.red;
+  if (kind === "warning") return C.orange;
+  if (kind === "take") return C.teal;
+  if (kind === "reward") return C.green;
+  return C.fgMuted;
+}
 
 const ALERTS = [
   {
@@ -600,8 +711,17 @@ function PillboxCamera() {
 
 // ─── Screen 2 · Live Camera ───────────────────────────────────────
 
-function LiveScreen() {
+function LiveScreen({ status, connected, loading, refresh, post }: {
+  status: ApiStatus;
+  connected: boolean;
+  loading: boolean;
+  refresh: () => Promise<void>;
+  post: (path: string, body?: unknown) => Promise<void>;
+}) {
   const [refreshing, setRefreshing] = useState(false);
+  const latestEvents = status.events.length
+    ? status.events
+    : [{ id: "empty", time: "--:--", kind: "info" as const, message: "等待后端生成取药或提醒事件" }];
 
   return (
     <div style={{ paddingBottom: 36 }}>
@@ -611,14 +731,14 @@ function LiveScreen() {
           <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 2 }}>看今天的药有没有准备好</div>
         </div>
         <button
-          onClick={() => { setRefreshing(true); setTimeout(() => setRefreshing(false), 1500); }}
+          onClick={() => { setRefreshing(true); refresh().finally(() => setTimeout(() => setRefreshing(false), 400)); }}
           style={{
             ...GLASS_TEAL, borderRadius: 11, padding: "7px 13px",
             color: C.teal, cursor: "pointer", border: "1px solid rgba(255,255,255,0.65)",
             display: "flex", alignItems: "center", gap: 5, fontSize: 13, fontWeight: 500,
           }}
         >
-          <RefreshCw size={13} style={{ animation: refreshing ? "spin 0.8s linear infinite" : "none" }} />
+          <RefreshCw size={13} style={{ animation: refreshing || loading ? "spin 0.8s linear infinite" : "none" }} />
           刷新画面
         </button>
       </div>
@@ -651,16 +771,16 @@ function LiveScreen() {
               LIVE
             </span>
             <span style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", color: "#6A8FA0", fontSize: 10, fontFamily: "monospace", padding: "2px 7px", borderRadius: 4 }}>
-              08:01:32
+              {status.updated_at ? new Date(status.updated_at).toLocaleTimeString() : "--:--:--"}
             </span>
           </div>
 
           <div style={{ position: "absolute", bottom: 18, left: 10, right: 10, display: "flex", justifyContent: "space-between" }}>
             <span style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", color: "#4ABFA0", fontSize: 9.5, fontFamily: "monospace", padding: "2px 7px", borderRadius: 4 }}>
-              早上药已取出
+              {connected ? status.detector : "后端未连接"}
             </span>
             <span style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", color: "#6A8FA0", fontSize: 9.5, fontFamily: "monospace", padding: "2px 7px", borderRadius: 4 }}>
-              下一次 12:00
+              {status.current_period_label} · {status.system_state}
             </span>
           </div>
         </div>
@@ -668,39 +788,44 @@ function LiveScreen() {
 
       {/* Status chips */}
       <div style={{ display: "flex", gap: 7, padding: "10px 16px 0", flexWrap: "wrap" }}>
-        <Chip color={C.green} bg={C.greenBg}>已吃：多奈哌齐片</Chip>
-        <Chip color={C.amber} bg={C.amberBg}>下一次：美金刚片</Chip>
-        <Chip color={C.fgMid} bg="rgba(242,241,238,0.8)">今天还剩 2 次</Chip>
+        <Chip color={connected ? C.green : C.amber} bg={connected ? C.greenBg : C.amberBg}>{connected ? "FastAPI 已连接" : "等待 FastAPI"}</Chip>
+        <Chip color={C.amber} bg={C.amberBg}>下一次：{status.next_reminder.time}</Chip>
+        <Chip color={C.fgMid} bg="rgba(242,241,238,0.8)">状态机：{status.system_state}</Chip>
       </div>
 
       {/* Detection results */}
       <div style={{ padding: "12px 16px 0" }}>
         <SectionHeader>药格情况</SectionHeader>
         <GlassCard>
-          {MEDICINE_PLAN.map((row, i) => (
+          {MEDICINE_PLAN.map((row, i) => {
+            const slot = status.slots[SLOT_ORDER[i]];
+            const ok = slot.pill_count === slot.expected_count;
+            return (
             <div key={i} style={{
               padding: "11px 16px",
               borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none",
               display: "flex", alignItems: "center", gap: 12,
             }}>
-              <Dot color={row.filled ? C.green : C.amber} />
+              <Dot color={ok ? C.green : C.orange} />
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>{row.label} {row.time}</span>
                   <span style={{
-                    fontSize: 11, color: row.filled ? C.green : C.amber,
-                    background: row.filled ? C.greenBg : C.amberBg,
+                    fontSize: 11, color: ok ? C.green : C.orange,
+                    background: ok ? C.greenBg : C.orangeBg,
                     padding: "1px 9px", borderRadius: 99,
                     backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
                     border: "1px solid rgba(255,255,255,0.5)",
-                  }}>{row.status}</span>
+                  }}>{slot.status_label}</span>
                 </div>
                 <div style={{ display: "flex", gap: 10, marginTop: 3 }}>
                   <span style={{ fontSize: 12, color: C.fgMuted }}>{row.medicine} · {row.dose}</span>
+                  <span style={{ fontSize: 12, fontFamily: "monospace", color: C.teal }}>当前 {slot.pill_count}/{slot.expected_count}</span>
+                  <span style={{ fontSize: 12, fontFamily: "monospace", color: C.fgMuted }}>conf {slot.confidence}</span>
                 </div>
               </div>
             </div>
-          ))}
+          );})}
         </GlassCard>
       </div>
 
@@ -708,19 +833,15 @@ function LiveScreen() {
       <div style={{ padding: "12px 16px 0" }}>
         <SectionHeader>今天发生了什么</SectionHeader>
         <GlassCard style={{ padding: "4px 0" }}>
-          {[
-            { time: "07:58", text: "早上药已准备好：多奈哌齐片，1 片", color: C.green },
-            { time: "08:00", text: "已提醒外婆吃早上药", color: C.amber },
-            { time: "08:01", text: "早上药已取出，今天已完成 1 次", color: C.teal },
-          ].map((ev, i) => (
+          {latestEvents.map((ev, i) => (
             <div key={i} style={{
               padding: "9px 16px",
               borderBottom: i === 0 ? "1px solid rgba(255,255,255,0.5)" : "none",
               display: "flex", alignItems: "center", gap: 10,
             }}>
               <span style={{ fontSize: 11, fontFamily: "monospace", color: C.fgMuted, flexShrink: 0 }}>{ev.time}</span>
-              <Dot color={ev.color} />
-              <span style={{ fontSize: 13, color: C.fg, lineHeight: 1.4 }}>{ev.text}</span>
+              <Dot color={eventColor(ev.kind)} />
+              <span style={{ fontSize: 13, color: C.fg, lineHeight: 1.4 }}>{ev.message}</span>
             </div>
           ))}
         </GlassCard>
@@ -728,7 +849,7 @@ function LiveScreen() {
 
       {/* Actions */}
       <div style={{ padding: "14px 16px 0", display: "flex", gap: 10 }}>
-        <button style={{
+        <button onClick={() => post("/api/simulate/take", { count: 0 })} style={{
           flex: 2, padding: "13px",
           background: "linear-gradient(135deg, #3E9890, #2F7A74)",
           color: "white", border: "none", borderRadius: 14,
@@ -736,14 +857,14 @@ function LiveScreen() {
           display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
           boxShadow: "0 4px 16px rgba(58,136,130,0.35)",
         }}>
-          <Phone size={15} />联系家属
+          <Activity size={15} />模拟当前药格取空
         </button>
-        <button style={{
+        <button onClick={() => post("/api/reset")} style={{
           flex: 1, padding: "13px", ...GLASS,
           borderRadius: 14, fontSize: 14, fontWeight: 600, cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "center", gap: 7, color: C.fg,
         }}>
-          <Activity size={15} />日志
+          <RefreshCw size={15} />重置
         </button>
       </div>
     </div>
@@ -1023,10 +1144,12 @@ function HistoryScreen({ tab, setTab }: { tab: 0 | 1 | 2; setTab: (t: 0 | 1 | 2)
 // ─── Screen 5 · Settings ─────────────────────────────────────────
 
 function SettingsScreen({
-  toggles, setToggles,
+  toggles, setToggles, status, post,
 }: {
   toggles: { wrongSlot: boolean; dosage: boolean; missed: boolean; uncertain: boolean };
   setToggles: React.Dispatch<React.SetStateAction<{ wrongSlot: boolean; dosage: boolean; missed: boolean; uncertain: boolean }>>;
+  status: ApiStatus;
+  post: (path: string, body?: unknown) => Promise<void>;
 }) {
   return (
     <div style={{ paddingBottom: 40 }}>
@@ -1040,7 +1163,7 @@ function SettingsScreen({
           {[
             { label: "药盒连接", value: "正常", valueColor: C.green, dot: true },
             { label: "提醒方式", value: "声音 + 手机通知", valueColor: C.teal, dot: false },
-            { label: "药盒画面", value: "可查看", valueColor: C.fgMid, dot: false },
+            { label: "识别后端", value: status.detector, valueColor: C.fgMid, dot: false },
           ].map((item, i) => (
             <div key={i} style={{ padding: "13px 16px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 14, color: C.fg }}>{item.label}</span>
@@ -1066,6 +1189,19 @@ function SettingsScreen({
                 <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 1 }}>{s.medicine} · {s.dose} · {s.type}</div>
               </div>
               <ChevronRight size={16} color={C.fgMuted} />
+            </div>
+          ))}
+        </GlassCard>
+      </div>
+
+      <div style={{ padding: "0 16px 14px" }}>
+        <SectionHeader>演示控制</SectionHeader>
+        <GlassCard>
+          {SLOT_ORDER.map((key, i) => (
+            <div key={key} style={{ padding: "11px 16px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ width: 44, fontSize: 13, fontWeight: 600, color: C.fg }}>{status.slots[key].label}</span>
+              <button onClick={() => post("/api/period", { period: key })} style={{ flex: 1, padding: "8px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.65)", background: status.current_period === key ? C.tealBg : "rgba(255,255,255,0.55)", color: status.current_period === key ? C.teal : C.fgMid, cursor: "pointer" }}>设为当前</button>
+              <button onClick={() => post("/api/simulate/take", { slot: key, count: 0 })} style={{ flex: 1, padding: "8px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.65)", background: "rgba(255,255,255,0.55)", color: C.fgMid, cursor: "pointer" }}>取空</button>
             </div>
           ))}
         </GlassCard>
@@ -1137,6 +1273,7 @@ export default function App() {
   const [alertModal, setAlertModal] = useState<number | null>(null);
   const [historyTab, setHistoryTab] = useState<0 | 1 | 2>(0);
   const [toggles, setToggles] = useState({ wrongSlot: true, dosage: true, missed: true, uncertain: true });
+  const { status, connected, loading, refresh, post } = usePillboxStatus();
 
   return (
     <>
@@ -1212,10 +1349,10 @@ export default function App() {
           {/* Scrollable content */}
           <div style={{ position: "relative", zIndex: 1, flex: 1, overflowY: "auto", overflowX: "hidden" }}>
             {screen === "dashboard" && <DashboardScreen onNav={setScreen} />}
-            {screen === "live" && <LiveScreen />}
+            {screen === "live" && <LiveScreen status={status} connected={connected} loading={loading} refresh={refresh} post={post} />}
             {screen === "alerts" && <AlertsScreen alertModal={alertModal} setAlertModal={setAlertModal} />}
             {screen === "history" && <HistoryScreen tab={historyTab} setTab={setHistoryTab} />}
-            {screen === "settings" && <SettingsScreen toggles={toggles} setToggles={setToggles} />}
+            {screen === "settings" && <SettingsScreen toggles={toggles} setToggles={setToggles} status={status} post={post} />}
           </div>
 
           <BottomNav current={screen} onChange={setScreen} />

@@ -3,3 +3,5 @@ opencv-python
 pillow
 inference-sdk
 ultralytics
+fastapi
+uvicorn[standard]

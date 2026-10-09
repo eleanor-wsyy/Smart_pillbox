@@ -1,0 +1,4 @@
+﻿batch_id,sample_id,captured_at,saved_at,source,source_name,device,phase,sample_kind,lighting,background,angle,overlap,occlusion,note,config_id,backend,model,confidence_kind,slot_id,slot_name,ground_truth,raw_prediction,smoothed_prediction,event,status,reason,confidence,quality,frame_width,frame_height,raw_image,input_image,overlay_image,raw_sha256,input_sha256,cloud_info
+,,,,,,,,,,,,,,,,,,,Morning,早上,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,Noon,中午,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,Evening,晚上,,,,,,,,,,,,,,,,

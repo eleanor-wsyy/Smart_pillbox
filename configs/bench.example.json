@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "camera_index": 0,
+  "mirror": false,
+  "rotation": 0,
+  "slots": [
+    {
+      "id": "Morning",
+      "name": "早上",
+      "rect": [
+        0.04,
+        0.15,
+        0.32,
+        0.9
+      ]
+    },
+    {
+      "id": "Noon",
+      "name": "中午",
+      "rect": [
+        0.36,
+        0.15,
+        0.64,
+        0.9
+      ]
+    },
+    {
+      "id": "Evening",
+      "name": "晚上",
+      "rect": [
+        0.68,
+        0.15,
+        0.96,
+        0.9
+      ]
+    }
+  ],
+  "detector": {
+    "backend": "opencv",
+    "yolo_model": "",
+    "roboflow_model": "pill-detection-fnftd/3",
+    "confidence": 0.4,
+    "timeout_seconds": 20,
+    "allowed_classes": [
+      "pill",
+      "pills",
+      "tablet",
+      "tablets",
+      "capsule",
+      "capsules"
+    ]
+  },
+  "opencv": {
+    "hsv_ranges": [
+      [
+        [
+          0,
+          0,
+          170
+        ],
+        [
+          179,
+          75,
+          255
+        ]
+      ]
+    ],
+    "min_area_ratio": 0.003,
+    "max_area_ratio": 0.2,
+    "aspect_min": 0.3,
+    "aspect_max": 3.5,
+    "min_fill_ratio": 0.42,
+    "max_mask_coverage": 0.75
+  },
+  "quality": {
+    "min_mean_brightness": 12,
+    "max_overexposed_fraction": 0.85,
+    "min_laplacian_variance": 0
+  }
+}

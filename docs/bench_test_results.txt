@@ -1,0 +1,54 @@
+test_begin_requires_frozen_image (test_gui_smoke.GuiSmokeTests.test_begin_requires_frozen_image) ... ok
+test_camera_open_failure_does_not_use_simulator (test_gui_smoke.GuiSmokeTests.test_camera_open_failure_does_not_use_simulator) ... ok
+test_demo_keeps_labels_empty_and_kind_explicit (test_gui_smoke.GuiSmokeTests.test_demo_keeps_labels_empty_and_kind_explicit) ... ok
+test_demo_respects_mirror_and_rotation (test_gui_smoke.GuiSmokeTests.test_demo_respects_mirror_and_rotation) ... ok
+test_load_label_save_export_workflow (test_gui_smoke.GuiSmokeTests.test_load_label_save_export_workflow) ... ok
+test_manual_quality_records_unknown (test_gui_smoke.GuiSmokeTests.test_manual_quality_records_unknown) ... ok
+test_new_image_clears_previous_labels (test_gui_smoke.GuiSmokeTests.test_new_image_clears_previous_labels) ... ok
+test_class_whitelist_must_be_list (test_vision_bench.ConfigTests.test_class_whitelist_must_be_list) ... ok
+test_config_round_trip_unicode_path (test_vision_bench.ConfigTests.test_config_round_trip_unicode_path) ... ok
+test_counts_blank_is_not_zero (test_vision_bench.ConfigTests.test_counts_blank_is_not_zero) ... ok
+test_duplicate_slot_ids_rejected (test_vision_bench.ConfigTests.test_duplicate_slot_ids_rejected) ... ok
+test_hsv_bounds_rejected (test_vision_bench.ConfigTests.test_hsv_bounds_rejected) ... ok
+test_invalid_counts_rejected (test_vision_bench.ConfigTests.test_invalid_counts_rejected) ... ok
+test_nan_threshold_rejected (test_vision_bench.ConfigTests.test_nan_threshold_rejected) ... ok
+test_out_of_range_roi_rejected (test_vision_bench.ConfigTests.test_out_of_range_roi_rejected) ... ok
+test_overlapping_rois_rejected (test_vision_bench.ConfigTests.test_overlapping_rois_rejected) ... ok
+test_csv_bom_and_failure_gallery_escaping (test_vision_bench.DatasetAndMetricsTests.test_csv_bom_and_failure_gallery_escaping) ... ok
+test_csv_formula_guard (test_vision_bench.DatasetAndMetricsTests.test_csv_formula_guard) ... ok
+test_empty_dataset_does_not_make_accuracy (test_vision_bench.DatasetAndMetricsTests.test_empty_dataset_does_not_make_accuracy) ... ok
+test_failures_included_in_denominator (test_vision_bench.DatasetAndMetricsTests.test_failures_included_in_denominator) ... ok
+test_ground_truth_and_prediction_association (test_vision_bench.DatasetAndMetricsTests.test_ground_truth_and_prediction_association) ... ok
+test_image_integrity_check (test_vision_bench.DatasetAndMetricsTests.test_image_integrity_check) ... ok
+test_invalid_frame_count_is_null_not_zero (test_vision_bench.DatasetAndMetricsTests.test_invalid_frame_count_is_null_not_zero) ... ok
+test_kinds_phases_sources_not_mixed (test_vision_bench.DatasetAndMetricsTests.test_kinds_phases_sources_not_mixed) ... ok
+test_mutating_detector_configuration_rejected (test_vision_bench.DatasetAndMetricsTests.test_mutating_detector_configuration_rejected) ... ok
+test_negative_label_rejected (test_vision_bench.DatasetAndMetricsTests.test_negative_label_rejected) ... ok
+test_rows_with_missing_slot_rejected (test_vision_bench.DatasetAndMetricsTests.test_rows_with_missing_slot_rejected) ... ok
+test_simulator_source_rejected (test_vision_bench.DatasetAndMetricsTests.test_simulator_source_rejected) ... ok
+test_template_contains_no_fabricated_predictions (test_vision_bench.DatasetAndMetricsTests.test_template_contains_no_fabricated_predictions) ... ok
+test_unlabelled_samples_not_used_as_ground_truth (test_vision_bench.DatasetAndMetricsTests.test_unlabelled_samples_not_used_as_ground_truth) ... ok
+test_camera_open_failure_is_explicit (test_vision_bench.InputAndDetectorTests.test_camera_open_failure_is_explicit) ... ok
+test_camera_read_failure_does_not_return_frame (test_vision_bench.InputAndDetectorTests.test_camera_read_failure_does_not_return_frame) ... ok
+test_cloud_centers_map_to_configured_rectangles (test_vision_bench.InputAndDetectorTests.test_cloud_centers_map_to_configured_rectangles) ... ok
+test_cloud_error_does_not_use_opencv_or_log_key (test_vision_bench.InputAndDetectorTests.test_cloud_error_does_not_use_opencv_or_log_key) ... ok
+test_cloud_malformed_response_is_failure (test_vision_bench.InputAndDetectorTests.test_cloud_malformed_response_is_failure) ... ok
+test_cloud_request_timeout_and_no_prediction_cache (test_vision_bench.InputAndDetectorTests.test_cloud_request_timeout_and_no_prediction_cache) ... ok
+test_dark_frame_is_unknown (test_vision_bench.InputAndDetectorTests.test_dark_frame_is_unknown) ... ok
+test_empty_usable_roi_is_valid_zero (test_vision_bench.InputAndDetectorTests.test_empty_usable_roi_is_valid_zero) ... ok
+test_generated_disc_count (test_vision_bench.InputAndDetectorTests.test_generated_disc_count) ... ok
+test_invalid_image_fails (test_vision_bench.InputAndDetectorTests.test_invalid_image_fails) ... ok
+test_manual_occlusion_is_unknown (test_vision_bench.InputAndDetectorTests.test_manual_occlusion_is_unknown) ... ok
+test_missing_cloud_key_no_fallback (test_vision_bench.InputAndDetectorTests.test_missing_cloud_key_no_fallback) ... ok
+test_missing_yolo_weights_no_download (test_vision_bench.InputAndDetectorTests.test_missing_yolo_weights_no_download) ... ok
+test_no_medication_state_machine_called (test_vision_bench.InputAndDetectorTests.test_no_medication_state_machine_called) ... ok
+test_non_pill_yolo_classes_are_rejected (test_vision_bench.InputAndDetectorTests.test_non_pill_yolo_classes_are_rejected) ... ok
+test_tiny_roi_is_error (test_vision_bench.InputAndDetectorTests.test_tiny_roi_is_error) ... ok
+test_transforms_preserve_raw (test_vision_bench.InputAndDetectorTests.test_transforms_preserve_raw) ... ok
+test_unicode_image_round_trip (test_vision_bench.InputAndDetectorTests.test_unicode_image_round_trip) ... ok
+test_white_background_is_not_valid_zero (test_vision_bench.InputAndDetectorTests.test_white_background_is_not_valid_zero) ... ok
+
+----------------------------------------------------------------------
+Ran 49 tests in 6.813s
+
+OK

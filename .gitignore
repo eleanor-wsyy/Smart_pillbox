@@ -12,3 +12,9 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/*.log
+
+# 台架实验及本地配置不入库
+.venv-bench/
+configs/*.local.json
+.env.*
+!.env.bench.example

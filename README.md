@@ -185,3 +185,17 @@ Do not hard-code the Roboflow API key in source code. Set it before running:
 $env:ROBOFLOW_API_KEY="your_api_key"
 python smart_pillbox_opencv.py --detector roboflow
 ```
+
+## 独立视觉台架测试工具（新增）
+
+用于没有完整药盒硬件时先采集、人工标注并评估真实图片。新增入口不自动回退模拟器，也不生成服药事件；原桌面演示和APP/API保持原样。
+
+```powershell
+python -m venv .venv-bench
+.\.venv-bench\Scripts\python.exe -m pip install -r requirements-bench.txt
+.\.venv-bench\Scripts\python.exe bench_tool.py gui
+```
+
+Windows首次使用可双击 `setup_bench.cmd` 安装依赖，再双击 `start_bench.cmd`。没有药品和硬件时，点击GUI中的“软件演练图”练习完整操作；生成数据强制标为软件测试夹具，不是真实药片试验。
+
+完整中文操作、配置说明、统计口径和首轮测试清单见 [视觉台架测试操作说明](docs/vision_bench_guide.md)。产品目标仍为21格，本工具先做3区域台架验证。

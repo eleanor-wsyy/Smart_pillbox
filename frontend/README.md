@@ -1,11 +1,40 @@
+# Smart Pillbox 前端 · 家庭照看
 
-  # High-Fidelity Mobile Prototype
+基于 React + Vite + TypeScript 的单机演示界面。设备状态与设备事件读取 FastAPI；家庭成员、交接单、人工确认的用药计划、库存和复核记录保存在**当前浏览器**的 localStorage。首次进入不预置病例、服药记录或家属。
 
-  This is a code bundle for High-Fidelity Mobile Prototype. The original project is available at https://www.figma.com/design/loJQoCAdKfFWyETCsiYFOP/High-Fidelity-Mobile-Prototype.
+## 本地启动
 
-  ## Running the code
+在仓库根目录运行：
 
-  Run `npm i` to install the dependencies.
+```powershell
+python -m pip install -r requirements.txt
+python -m uvicorn api_server:app --host 127.0.0.1 --port 8000
+```
 
-  Run `npm run dev` to start the development server.
-  
+另开终端，进入 `frontend`：
+
+```powershell
+pnpm install
+pnpm dev
+```
+
+打开 http://127.0.0.1:5173/ 。`vite.config.ts` 将 `/api` 代理到本机 8000。生产部署可设置 `VITE_API_BASE`。构建：`pnpm build`。前端开发依赖首次安装需要允许 `pnpm-workspace.yaml` 中列出的原生构建脚本。
+
+## 功能与安全边界
+
+- 首页/药盒：从 `/api/status` 显示药格数量；提醒从 `/api/events` 获取 `warning`/`critical` 事件；历史合并后端事件与本地真实操作，并按类型筛选。断线显示错误，不回填假状态。
+- 家庭圈：添加一位主照顾人和临时照顾人、生成用药计划/药格状态/库存提醒快照、由选中的接手人确认、结束交接，均留时间戳和本机事件。**身份选择不等于真实身份验证**。
+- 病历照片：使用浏览器内 tesseract.js 的 `chi_sim+eng` OCR 转写原文；真实识别失败时明确提示改为对照图片手工录入。**OCR 文本不会直接生成生效的处方**，家属逐项填写药名、频次、剂量、时段和数量后点击人工确认。照片仅当前页面临时预览，不上传或永久保存；不要上传未获授权的敏感资料。首次识别语言包需联网。
+- 人工确认计划的药格**数量**经新增 `POST /api/medplan` 同步后端（每格 0–3 粒）；`POST /api/period` 原接口只负责切换当前时段，未修改其行为。离线确认暂存本机，恢复后需点击“同步数量到设备”。后端重启后计划数量会恢复为模拟器默认值，也需重新同步。
+- 装药复核：逐格上传现场照片、对照本地确认计划与实时药格数量、选择实际药品库存批次、人工勾选核对身份；过期、临期、数量不符、视觉不确定或多种药混格会阻止通过。三格全部复核通过且数量未变化才能登记完成。照片不作自动品种识别且只记录文件名，不留存照片。
+- 保质期：家属录入库存数量与有效期；距有效期不超过 30 天高亮；过期/临期可标记已处理并记录。本地设备不能检测药品有效期，依赖人工录入的包装日期。
+
+**取药事件 ≠ 服药/吞咽确认。** 单摄像头与数量变化不能证明老人已经吞咽，界面和记录只称“取药”“药格复核”。设备页的 0–3 粒按钮、取空及重置真实调用现有模拟接口，不会产生虚构的服药历史。
+
+## 验收与已知限制
+
+- 截图：`docs/screenshots/`（通过自动化浏览器在空浏览器档案中真实操作并抓取；内容中的“测试”字样来自测试表单输入，不是预置数据）。
+- 自测步骤与结果：见 `docs/acceptance.md`。
+- 后端 `/api/events` 只保留最近 50 条并在重启后丢失；本地事件最多 300 条、仅本机可见，不提供云同步、多端一致性、真实推送、身份认证或医疗决策能力。
+- OCR 仅负责文字转写，无法医学地识别处方；复核照片仅供人工观察，药品身份不能用数量推断。一格多种药无法逐品种核对，阻止自动“通过”。
+- demo 中的设备画面为**模拟器数据**，没有真实摄像头视频，也不代表临床器械验证。通知设置和虚构联系人被移除，避免展示未接入的能力。

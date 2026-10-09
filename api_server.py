@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import smart_pillbox_opencv as pillbox
 
@@ -181,3 +181,23 @@ def reset_demo() -> dict[str, Any]:
 @app.get("/")
 def root() -> dict[str, str]:
     return {"message": "Smart Pillbox API is running", "docs": "/docs", "status": "/api/status"}
+
+
+class PlanCountsRequest(BaseModel):
+    counts: dict[str, int]
+
+    @field_validator("counts")
+    @classmethod
+    def validate_counts(cls, counts: dict[str, int]) -> dict[str, int]:
+        if set(counts) != set(pillbox.SLOTS_CONFIG) or any(type(v) is not int or not 0 <= v <= 3 for v in counts.values()):
+            raise ValueError("需要早/中/晚各格的 0-3 粒数量")
+        return counts
+
+
+@app.post("/api/medplan")
+def set_medplan_counts(payload: PlanCountsRequest) -> dict[str, Any]:
+    """Sync manually confirmed counts; does not claim to recognize medicine identity."""
+    for slot, count in payload.counts.items():
+        pillbox.MEDICATION_PLAN[slot]["expected_count"] = count
+    remember_events(["[INFO] 家属已人工确认并同步三个药格的计划数量。"])
+    return build_status()

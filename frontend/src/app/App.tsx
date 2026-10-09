@@ -1,1367 +1,197 @@
-import { useEffect, useState } from "react";
-import {
-  Home, Camera, Bell, Settings, CalendarDays,
-  Phone, RefreshCw, ChevronRight, CheckCircle2,
-  AlertOctagon, AlertTriangle, Info, X, Clock,
-  Wifi, User, Activity, Check, Shield,
-} from "lucide-react";
+/// <reference types="vite/client" />
+import { useCallback, useEffect, useState } from "react";
+import { Home, Camera, Bell, CalendarDays, Settings, Users, FileText, PackageCheck, Pill, RefreshCw, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { createWorker } from "tesseract.js";
+import { blank, expiryDays, expiryState, labels, load, logEvent, newId, save, slots, type Data, type Handover, type Medicine, type Plan, type SlotKey } from "./store";
 
-// ─── Design tokens ────────────────────────────────────────────────
-const C = {
-  bgFallback: "#FFEEEE",
-  bgWebkit: "-webkit-linear-gradient(to right, #DDEFBB, #FFEEEE)",
-  bg: "linear-gradient(to right, #DDEFBB, #FFEEEE)",
-  headerBgFallback: "#FFEEEE",
-  headerBgWebkit: "-webkit-linear-gradient(to right, #DDEFBB, #FFEEEE)",
-  headerBg: "linear-gradient(to right, #DDEFBB, #FFEEEE)",
-  card: "rgba(255,255,255,0.72)",
-  cardSolid: "#FFFFFF",
-  teal: "#3A8882",
-  tealBg: "rgba(234,244,243,0.85)",
-  tealLight: "#C4E4E1",
-  fg: "#182530",
-  fgMid: "#3D5060",
-  fgMuted: "#7A909E",
-  border: "rgba(255,255,255,0.75)",
-  borderSubtle: "rgba(24,38,47,0.07)",
-
-  green: "#17A876",
-  greenBg: "rgba(237,251,245,0.82)",
-
-  amber: "#CC8A0A",
-  amberBg: "rgba(254,248,236,0.82)",
-
-  orange: "#C96500",
-  orangeBg: "rgba(254,242,232,0.82)",
-
-  red: "#C43030",
-  redBg: "rgba(254,241,241,0.82)",
-  redBorder: "#F5AAAA",
-  orangeBorder: "#F5BF9A",
-  amberBorder: "#F5D990",
-  greenBorder: "#A8E5CC",
-};
-
-// ─── Glass styles ────────────────────────────────────────────────
-const GLASS: React.CSSProperties = {
-  background: C.card,
-  backdropFilter: "blur(20px) saturate(180%)",
-  WebkitBackdropFilter: "blur(20px) saturate(180%)",
-  border: `1px solid ${C.border}`,
-  boxShadow: "0 4px 28px rgba(0,0,0,0.07), 0 1px 3px rgba(0,0,0,0.04), inset 0 1px 0 rgba(255,255,255,0.9)",
-};
-
-const GLASS_DARK: React.CSSProperties = {
-  background: "rgba(255,255,255,0.38)",
-  backdropFilter: "blur(12px) saturate(150%)",
-  WebkitBackdropFilter: "blur(12px) saturate(150%)",
-  border: "1px solid rgba(255,255,255,0.62)",
-};
-
-const GLASS_TEAL: React.CSSProperties = {
-  background: "rgba(234,244,243,0.75)",
-  backdropFilter: "blur(14px)",
-  WebkitBackdropFilter: "blur(14px)",
-  border: "1px solid rgba(255,255,255,0.65)",
-};
-
-type Screen = "dashboard" | "live" | "alerts" | "history" | "settings";
-
-const MEDICINE_PLAN = [
-  { label: "早上", en: "AM", time: "08:00", medicine: "多奈哌齐片", dose: "1 片", type: "片剂", status: "已完成", color: C.green, bg: C.greenBg, filled: true },
-  { label: "中午", en: "PM", time: "12:00", medicine: "美金刚片", dose: "1 片", type: "片剂", status: "待服用", color: C.amber, bg: C.amberBg, filled: false },
-  { label: "晚上", en: "EVE", time: "20:00", medicine: "卡巴拉汀胶囊", dose: "1 粒", type: "胶囊", status: "待服用", color: C.amber, bg: C.amberBg, filled: false },
-];
-
-type SlotKey = "Morning" | "Noon" | "Evening";
-
-type ApiEvent = {
-  id: string;
-  time: string;
-  kind: "critical" | "warning" | "take" | "reward" | "info";
-  message: string;
-};
-
-type ApiSlot = {
-  key: SlotKey;
-  label: string;
-  pill_count: number;
-  expected_count: number;
-  confidence: number;
-  present: boolean;
-  status: string;
-  status_label: string;
-  message: string;
-  class_counts: Record<string, number>;
-  is_current: boolean;
-};
-
-type ApiStatus = {
-  online: boolean;
-  backend: string;
-  detector: string;
-  current_period: SlotKey;
-  current_period_label: string;
-  system_state: string;
-  completed_count: number;
-  total_count: number;
-  next_reminder: { label: string; time: string };
-  slots: Record<SlotKey, ApiSlot>;
-  events: ApiEvent[];
-  updated_at: string;
-};
-
-const SLOT_ORDER: SlotKey[] = ["Morning", "Noon", "Evening"];
-const API_BASE = import.meta.env.VITE_API_BASE ?? "";
-
-const DEFAULT_STATUS: ApiStatus = {
-  online: false,
-  backend: "等待 FastAPI 连接",
-  detector: "OpenCV fallback",
-  current_period: "Morning",
-  current_period_label: "早上",
-  system_state: "NORMAL_CARE",
-  completed_count: 0,
-  total_count: 3,
-  next_reminder: { label: "早上", time: "08:00" },
-  slots: {
-    Morning: { key: "Morning", label: "早上", pill_count: 1, expected_count: 1, confidence: 1, present: true, status: "ready", status_label: "药量正确", message: "READY", class_counts: { tablets: 1 }, is_current: true },
-    Noon: { key: "Noon", label: "中午", pill_count: 1, expected_count: 1, confidence: 1, present: true, status: "ready", status_label: "待时段", message: "READY", class_counts: { tablets: 1 }, is_current: false },
-    Evening: { key: "Evening", label: "晚上", pill_count: 1, expected_count: 1, confidence: 1, present: true, status: "ready", status_label: "待时段", message: "READY", class_counts: { capsules: 1 }, is_current: false },
-  },
-  events: [],
-  updated_at: "",
-};
-
-function usePillboxStatus() {
-  const [status, setStatus] = useState<ApiStatus>(DEFAULT_STATUS);
-  const [connected, setConnected] = useState(false);
-  const [loading, setLoading] = useState(false);
-
-  const refresh = async () => {
+type Screen = "dashboard" | "live" | "alerts" | "history" | "settings" | "family" | "records" | "review" | "inventory";
+type ApiEvent = { id: string; time: string; kind: string; message: string };
+type ApiSlot = { key: SlotKey; label: string; pill_count: number; expected_count: number; confidence: number; status: string; status_label: string; present: boolean };
+type Status = { online: boolean; current_period: SlotKey; current_period_label: string; system_state: string; updated_at: string; slots: Record<SlotKey, ApiSlot>; next_reminder: { label: string; time: string } };
+type Feed = { id: string; at: number; text: string; category: "device" | "family" | "plan" | "review" | "expiry" | "inventory"; severity?: string; timeLabel: string };
+const base = import.meta.env.VITE_API_BASE ?? "";
+const palette = { ink: "#18313a", muted: "#637981", teal: "#307d78", pale: "#e9f6f2", warning: "#9b5f05", error: "#b83e3c" };
+const card: React.CSSProperties = { background: "rgba(255,255,255,.78)", border: "1px solid rgba(255,255,255,.92)", borderRadius: 18, padding: 16, boxShadow: "0 6px 20px rgba(34,91,84,.08)", marginBottom: 12 };
+const field: React.CSSProperties = { width: "100%", padding: "10px 12px", border: "1px solid #cadbd5", borderRadius: 10, background: "#fff", font: "inherit", color: palette.ink, margin: "6px 0" };
+const button: React.CSSProperties = { border: 0, borderRadius: 11, background: palette.teal, color: "white", padding: "10px 14px", font: "inherit", fontWeight: 600, cursor: "pointer" };
+const secondary: React.CSSProperties = { ...button, background: palette.pale, color: palette.teal };
+const small: React.CSSProperties = { fontSize: 12, color: palette.muted, lineHeight: 1.55 };
+function dateLabel(value: string | number) { const d = new Date(value); return Number.isNaN(d.getTime()) ? "时间未知" : d.toLocaleString("zh-CN", { hour12: false }); }
+function Panel({ children }: { children: React.ReactNode }) { return <section style={card}>{children}</section>; }
+function Title({ title, desc }: { title: string; desc?: string }) { return <header style={{ margin: "7px 2px 20px" }}><h2 style={{ margin: "0 0 5px", fontSize: 22 }}>{title}</h2>{desc && <div style={small}>{desc}</div>}</header>; }
+function Empty({ children }: { children: React.ReactNode }) { return <p style={{ ...small, margin: "10px 0" }}>{children}</p>; }
+function useDevice() {
+  const [status, setStatus] = useState<Status | null>(null);
+  const [events, setEvents] = useState<ApiEvent[]>([]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const refresh = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/status`, { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setStatus(await res.json());
-      setConnected(true);
-    } catch {
-      setConnected(false);
-    }
-  };
-
-  const post = async (path: string, body?: unknown) => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}${path}`, {
-        method: "POST",
-        headers: body ? { "Content-Type": "application/json" } : undefined,
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setStatus(await res.json());
-      setConnected(true);
-    } catch {
-      setConnected(false);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    refresh();
-    const id = window.setInterval(refresh, 1200);
-    return () => window.clearInterval(id);
+      const [s, e] = await Promise.all([fetch(`${base}/api/status`, { cache: "no-store" }), fetch(`${base}/api/events`, { cache: "no-store" })]);
+      if (!s.ok || !e.ok) throw new Error(`HTTP ${s.status}/${e.status}`);
+      const next = await s.json(); const eventBody = await e.json();
+      if (!next.slots || !Array.isArray(eventBody.events)) throw new Error("接口响应格式错误");
+      setStatus(next); setEvents(eventBody.events); setError("");
+      return next as Status;
+    } catch (e) { setStatus(null); setEvents([]); setError(`后端连接失败：${e instanceof Error ? e.message : "网络错误"}`); return null; }
   }, []);
-
-  return { status, connected, loading, refresh, post };
-}
-
-function eventColor(kind: ApiEvent["kind"]) {
-  if (kind === "critical") return C.red;
-  if (kind === "warning") return C.orange;
-  if (kind === "take") return C.teal;
-  if (kind === "reward") return C.green;
-  return C.fgMuted;
-}
-
-const ALERTS = [
-  {
-    severity: "严重", sevColor: C.red, sevBg: C.redBg, sevBorder: C.redBorder,
-    iconType: "octagon", title: "拿错药格",
-    desc: "现在应该吃早上药，但晚上药格被打开了。请先把晚上药放回去，再取早上药。",
-    time: "08:02", slot: "早上药：多奈哌齐片",
-    action: "把晚上药放回原位，再确认早上药是否已服用", resolved: false,
-  },
-  {
-    severity: "警告", sevColor: C.orange, sevBg: C.orangeBg, sevBorder: C.orangeBorder,
-    iconType: "triangle", title: "药量不对",
-    desc: "早上药应该是 1 片多奈哌齐片。现在看起来数量不对，请帮忙确认。",
-    time: "07:55", slot: "早上药：多奈哌齐片",
-    action: "检查早上药格，确认是否少放或少取了一片", resolved: false,
-  },
-  {
-    severity: "提醒", sevColor: C.amber, sevBg: C.amberBg, sevBorder: C.amberBorder,
-    iconType: "info", title: "可能还没吃药",
-    desc: "早上药还没有取出。可以打电话或语音提醒外婆。",
-    time: "07:58", slot: "早上药：多奈哌齐片",
-    action: "提醒外婆现在吃早上药", resolved: false,
-  },
-  {
-    severity: "待确认", sevColor: C.amber, sevBg: C.amberBg, sevBorder: C.amberBorder,
-    iconType: "info", title: "看不清药盒",
-    desc: "药盒位置有遮挡，暂时看不清药量。请把药盒放正或擦一下镜头。",
-    time: "08:04", slot: "药盒画面",
-    action: "把药盒放正，确认药格没有被遮挡", resolved: false,
-  },
-  {
-    severity: "已解决", sevColor: C.green, sevBg: C.greenBg, sevBorder: C.greenBorder,
-    iconType: "check", title: "已放回正确药格",
-    desc: "中午药已放回，昨天的用药记录已恢复正常。",
-    time: "昨天 12:03", slot: "中午药：美金刚片",
-    action: "", resolved: true,
-  },
-];
-
-const SAFETY_STATES = [
-  { key: "正常看护", label: "药盒连接正常，会按时提醒", color: C.teal, bg: C.tealBg },
-  { key: "拿错药格", label: "会提醒先放回正确药格", color: C.red, bg: C.redBg },
-  { key: "药量不对", label: "会提示少拿或多拿了几粒", color: C.orange, bg: C.orangeBg },
-  { key: "可能漏服", label: "超时未取药会通知家属", color: C.amber, bg: C.amberBg },
-  { key: "看不清楚", label: "药盒被遮挡时需要确认", color: C.amber, bg: C.amberBg },
-  { key: "已恢复", label: "处理后记录恢复正常", color: C.green, bg: C.greenBg },
-];
-
-// ─── Blob background per screen ──────────────────────────────────
-
-function ScreenBlobs({ screen }: { screen: Screen }) {
-  type Blob = { w: number; h: number; color: string; s: React.CSSProperties };
-  const sets: Record<Screen, Blob[]> = {
-    dashboard: [
-      { w: 260, h: 260, color: "rgba(58,136,130,0.32)", s: { top: -100, left: -100 } },
-      { w: 200, h: 200, color: "rgba(23,168,118,0.24)", s: { top: 260, right: -80 } },
-      { w: 180, h: 180, color: "rgba(204,138,10,0.18)", s: { bottom: 40, left: 60 } },
-    ],
-    live: [
-      { w: 280, h: 280, color: "rgba(20,90,120,0.28)", s: { top: -100, left: -80 } },
-      { w: 200, h: 200, color: "rgba(58,136,130,0.22)", s: { top: 340, right: -80 } },
-      { w: 160, h: 160, color: "rgba(30,214,154,0.18)", s: { bottom: 60, left: 30 } },
-    ],
-    alerts: [
-      { w: 240, h: 240, color: "rgba(196,48,48,0.22)", s: { top: -80, right: -80 } },
-      { w: 200, h: 200, color: "rgba(201,101,0,0.2)", s: { top: 260, left: -60 } },
-      { w: 160, h: 160, color: "rgba(23,168,118,0.16)", s: { bottom: 30, right: -40 } },
-    ],
-    history: [
-      { w: 240, h: 240, color: "rgba(58,136,130,0.26)", s: { top: -80, left: -60 } },
-      { w: 200, h: 200, color: "rgba(23,168,118,0.2)", s: { bottom: 60, right: -70 } },
-    ],
-    settings: [
-      { w: 220, h: 220, color: "rgba(58,136,130,0.24)", s: { top: -60, right: -60 } },
-      { w: 200, h: 200, color: "rgba(100,110,200,0.18)", s: { bottom: 80, left: -70 } },
-      { w: 160, h: 160, color: "rgba(23,168,118,0.15)", s: { top: 360, left: 80 } },
-    ],
+  useEffect(() => { void refresh(); const timer = window.setInterval(() => { void refresh(); }, 1800); return () => clearInterval(timer); }, [refresh]);
+  const post = async (path: string, body?: unknown) => {
+    setBusy(true);
+    try {
+      const r = await fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      await refresh(); return true;
+    } catch (e) { setError(`操作失败：${e instanceof Error ? e.message : "网络错误"}`); return false; }
+    finally { setBusy(false); }
   };
-  return (
-    <>
-      {sets[screen].map((b, i) => (
-        <div key={i} style={{
-          position: "absolute", width: b.w, height: b.h,
-          borderRadius: "50%", background: b.color,
-          filter: "blur(70px)", pointerEvents: "none", ...b.s,
-        }} />
-      ))}
-    </>
-  );
+  return { status, events, error, busy, refresh, post };
 }
-
-// ─── Shared primitives ────────────────────────────────────────────
-
-function GlassCard({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
-  return (
-    <div style={{ borderRadius: 18, overflow: "hidden", ...GLASS, ...style }}>
-      {children}
-    </div>
-  );
+function merged(events: ApiEvent[], data: Data): Feed[] {
+  const remote: Feed[] = events.map(e => ({ id: `api-${e.id}`, at: /^\d{16,}$/.test(e.id) ? Number(e.id) / 1e6 : 0, text: e.message, category: "device", severity: e.kind, timeLabel: e.time }));
+  const local: Feed[] = data.events.map(e => ({ id: e.id, at: new Date(e.at).getTime(), text: e.message, category: e.type, timeLabel: dateLabel(e.at) }));
+  return [...remote, ...local].sort((a, b) => b.at - a.at);
 }
-
-function Dot({ color, pulse }: { color: string; pulse?: boolean }) {
-  return (
-    <span style={{
-      width: 7, height: 7, borderRadius: "50%", background: color,
-      flexShrink: 0, display: "inline-block",
-      animation: pulse ? "blink 1.5s ease-in-out infinite" : "none",
-    }} />
-  );
+function FeedRows({ items }: { items: Feed[] }) { return items.length ? <>{items.map(e => <Panel key={e.id}><div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><strong style={{ color: e.severity === "critical" ? palette.error : e.severity === "warning" ? palette.warning : palette.ink, fontSize: 13, overflowWrap: "anywhere" }}>{e.text}</strong></div><div style={small}>{e.category === "device" ? "设备事件" : ({ family: "家庭圈", plan: "用药计划", review: "装药复核", expiry: "保质期", inventory: "药品库存" } as Record<string,string>)[e.category]} · {e.timeLabel}</div></Panel>)}</> : <Panel><Empty>暂无真实记录。</Empty></Panel>; }
+const counts = (plans: Plan[]) => Object.fromEntries(slots.map(s => [s, plans.filter(p => p.slot === s).reduce((sum, p) => sum + p.count, 0)])) as Record<SlotKey,number>;
+function Dashboard({ data, status, navigate, alerts }: { data: Data; status: Status | null; navigate: (s: Screen) => void; alerts: number }) {
+  const current = data.handovers.find(h => h.confirmedAt && !h.endedAt);
+  return <>
+    <div style={{ background: "linear-gradient(130deg,#307d78,#71aaa0)", color: "white", padding: "26px 20px 34px", borderRadius: "0 0 27px 27px" }}><div style={{ fontSize: 12, opacity: .86 }}>Smart Pillbox · 家庭照看</div><h1 style={{ fontSize: 25, margin: "8px 0" }}>用药看护</h1><div>当前照看人：{current ? `${current.toName}（临时）` : data.members.find(m => m.role === "primary")?.name || "未设置"}</div><div style={{ fontSize: 12, marginTop: 8 }}>{status ? `设备已连接 · ${status.current_period_label}药格` : "设备未连接，状态不可用"}</div></div>
+    <main style={{ padding: 16 }}><Panel><strong>当前药格</strong>{status ? slots.map(k => <div key={k} style={{ paddingTop: 10, fontSize: 13 }}>{labels[k]}：检测到 {status.slots[k].pill_count} 粒 · 设备计划 {status.slots[k].expected_count} 粒 · {status.slots[k].status_label}</div>) : <Empty>连接后才能查看药格实时数据。</Empty>}<div style={{ ...small, marginTop: 10 }}>药格数量变化只表示取药，不代表已经吞服。</div></Panel>
+      <Panel><strong>已核对用药计划</strong>{data.plans.length ? data.plans.map(p => <div style={{ fontSize: 13, paddingTop: 9 }} key={p.id}>{labels[p.slot]} · {p.name} · {p.dose} · {p.count} 粒</div>) : <Empty>暂无已人工核对的用药计划。</Empty>}</Panel>
+      <Panel><strong>待关注</strong><div style={{ ...small, margin: "9px 0" }}>设备警报 {alerts} 条 · 临期/过期库存 {data.medicines.filter(m => !m.handledAt && expiryState(m) !== "ok").length} 项</div><button style={secondary} onClick={() => navigate("alerts")}>查看提醒</button></Panel>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>{([ ["家庭圈", "family", Users], ["病历录入", "records", FileText], ["装药复核", "review", PackageCheck], ["药品保质期", "inventory", Pill] ] as const).map(([label, to, Icon]) => <button key={to} onClick={() => navigate(to)} style={{ ...card, margin: 0, cursor: "pointer", textAlign: "left", color: palette.teal, fontWeight: 700 }}><Icon size={19} style={{ verticalAlign: "middle", marginRight: 6 }} />{label}</button>)}</div>
+    </main></>;
 }
-
-function Toggle({ on, onChange }: { on: boolean; onChange: () => void }) {
-  return (
-    <button onClick={onChange} style={{
-      width: 46, height: 27, borderRadius: 14, border: "none", cursor: "pointer",
-      background: on ? C.teal : "rgba(180,190,195,0.8)", position: "relative",
-      transition: "background 0.2s", flexShrink: 0, padding: 0,
-      backdropFilter: "blur(8px)",
-      WebkitBackdropFilter: "blur(8px)",
-    }}>
-      <span style={{
-        position: "absolute", top: 3, left: on ? 22 : 3,
-        width: 21, height: 21, borderRadius: "50%", background: "white",
-        boxShadow: "0 1px 6px rgba(0,0,0,0.28)", transition: "left 0.2s", display: "block",
-      }} />
-    </button>
-  );
+function Family({ data, status, change }: { data: Data; status: Status | null; change: (next: Data) => void }) {
+  const [name, setName] = useState(""); const [role, setRole] = useState<"primary" | "temporary">("temporary");
+  const [fromId, setFrom] = useState(""); const [toId, setTo] = useState(""); const [actor, setActor] = useState(""); const [note, setNote] = useState(""); const [message, setMessage] = useState("");
+  const primary = data.members.filter(m => m.role === "primary"); const helpers = data.members.filter(m => m.role === "temporary");
+  const pending = data.handovers.find(h => !h.confirmedAt && !h.endedAt);
+  const active = data.handovers.find(h => h.confirmedAt && !h.endedAt);
+  function add(e: React.FormEvent) { e.preventDefault(); const n = name.trim(); if (!n || (role === "primary" && primary.length)) { setMessage("请填写昵称；主照顾人只能设置一位。"); return; } change(logEvent({ ...data, members: [...data.members, { id: newId(), name: n, role }] }, "family", `添加家庭成员：${n}（${role === "primary" ? "主照顾人" : "临时照顾人"}）`)); setName(""); setMessage(""); }
+  function create() {
+    const from = primary.find(m => m.id === fromId); const to = helpers.find(m => m.id === toId);
+    if (!from || !to || !status || pending || active) { setMessage("请选择双方；设备需连接，且不能存在未结束的交接。"); return; }
+    const reminders = [...data.plans.map(p => `${labels[p.slot]}：${p.name} ${p.dose}（${p.count} 粒）`), ...data.medicines.filter(m => !m.handledAt && expiryState(m) !== "ok").map(m => `${m.name}：${expiryState(m) === "expired" ? "已过期" : "临期"}`)];
+    const h: Handover = { id: newId(), fromId: from.id, fromName: from.name, toId: to.id, toName: to.name, createdAt: new Date().toISOString(), note: note.trim(), planSnapshot: data.plans.map(p => ({ ...p })), slotSnapshot: slots.map(slot => ({ slot, count: status.slots[slot].pill_count, expected: status.slots[slot].expected_count, status: status.slots[slot].status_label })), reminders };
+    change(logEvent({ ...data, handovers: [h, ...data.handovers] }, "family", `${from.name}发起交接给${to.name}，等待接手人确认`)); setNote(""); setMessage("");
+  }
+  function confirm(h: Handover) { if (actor !== h.toId) { setMessage("请先选择交接单指定的接手人；本机演示不提供身份认证。"); return; } const at = new Date().toISOString(); change(logEvent({ ...data, handovers: data.handovers.map(x => x.id === h.id ? { ...x, confirmedAt: at } : x) }, "family", `${h.toName}已确认接手${h.fromName}的照看任务`)); setMessage(""); }
+  return <><Title title="家庭圈" desc="单机共享设备演示：身份由操作人选择，无法验证真实身份。交接前请当面核对。" />
+    <Panel><strong>家庭成员</strong>{data.members.length ? data.members.map(m => <div key={m.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, fontSize: 13 }}><span>{m.name} · {m.role === "primary" ? "主照顾人" : "临时照顾人"}</span><button style={secondary} onClick={() => { if (data.handovers.some(h => !h.endedAt && (h.fromId === m.id || h.toId === m.id))) { setMessage("请先结束或处理相关交接。"); return; } change(logEvent({ ...data, members: data.members.filter(x => x.id !== m.id) }, "family", `删除成员：${m.name}`)); }}>删除</button></div>) : <Empty>暂无家庭成员。</Empty>}
+    <form onSubmit={add}><input aria-label="成员昵称" placeholder="成员昵称" style={field} value={name} onChange={e => setName(e.target.value)} maxLength={30} /><select aria-label="成员角色" style={field} value={role} onChange={e => setRole(e.target.value as typeof role)}><option value="primary">主照顾人</option><option value="temporary">临时照顾人</option></select><button style={button}>添加成员</button></form></Panel>
+    <Panel><strong>发起照看交接</strong><select aria-label="发起人" style={field} value={fromId} onChange={e => setFrom(e.target.value)}><option value="">选择发起人（主照顾人）</option>{primary.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select><select aria-label="接手人" style={field} value={toId} onChange={e => setTo(e.target.value)}><option value="">选择接手人</option>{helpers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select><textarea aria-label="注意事项" placeholder="注意事项（由家属填写，可留空）" style={{ ...field, minHeight: 64 }} value={note} onChange={e => setNote(e.target.value)} /><button style={button} onClick={create}>生成交接单</button></Panel>
+    {data.handovers.map(h => <Panel key={h.id}><strong>{h.fromName} → {h.toName}</strong><div style={small}>发起：{dateLabel(h.createdAt)} · {h.endedAt ? `结束：${dateLabel(h.endedAt)}` : h.confirmedAt ? `确认：${dateLabel(h.confirmedAt)}` : "等待接手确认"}</div><p style={{ fontSize: 13 }}>注意事项：{h.note || "未填写"}</p><div style={{ fontSize: 13 }}>计划快照：{h.planSnapshot.length ? h.planSnapshot.map(p => `${labels[p.slot]} ${p.name} ${p.dose} ${p.count}粒`).join("；") : "暂无已核对计划"}</div><div style={{ fontSize: 13, marginTop: 6 }}>药格快照：{h.slotSnapshot?.map(s => `${labels[s.slot]} ${s.count}/${s.expected}粒（${s.status}）`).join("；") || "未连接，无法读取"}</div><div style={{ fontSize: 13, marginTop: 6 }}>待办提醒：{h.reminders.join("；") || "暂无已录入提醒"}</div>{!h.confirmedAt && !h.endedAt && <><select aria-label="当前操作人" style={field} value={actor} onChange={e => setActor(e.target.value)}><option value="">选择当前操作人</option>{data.members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select><button style={button} onClick={() => confirm(h)}>我已了解，确认接手</button></>}{h.confirmedAt && !h.endedAt && <div style={{ marginTop: 10 }}><button style={secondary} onClick={() => change(logEvent({ ...data, handovers: data.handovers.map(x => x.id === h.id ? { ...x, endedAt: new Date().toISOString() } : x) }, "family", `${h.toName}结束临时照看，交回${h.fromName}`))}>结束交接</button></div>}</Panel>)}
+    {message && <p role="alert" style={{ color: palette.error }}>{message}</p>}
+  </>;
 }
-
-function SectionHeader({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{
-      fontSize: 11, fontWeight: 700, letterSpacing: "0.07em",
-      color: C.fgMuted, textTransform: "uppercase", padding: "0 18px 8px",
-    }}>
-      {children}
-    </div>
-  );
+function parseOcrLine(line: string) {
+  const text = line.trim();
+  const doseMatch = text.match(/^(.{1,60}?)\s+(\d+(?:\.\d+)?\s*(?:片|粒|毫克|mg|tablets?|capsules?))/i);
+  const freq = text.match(/(?:每日|每天|一日)\s*[一二三四1-4]\s*次?|once daily|twice daily/i);
+  return { name: (doseMatch?.[1] || text).slice(0, 80), dose: doseMatch?.[2] || "", count: doseMatch ? Number(doseMatch[2].match(/^\d+/)?.[0] || 1) : 1, frequency: freq?.[0] || "" };
 }
-
-function Chip({ children, color, bg }: { children: React.ReactNode; color: string; bg: string }) {
-  return (
-    <span style={{
-      display: "inline-flex", alignItems: "center", padding: "3px 10px",
-      borderRadius: 99, fontSize: 11, fontWeight: 500, color, background: bg,
-      backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
-      border: "1px solid rgba(255,255,255,0.6)",
-    }}>
-      {children}
-    </span>
-  );
+function Records({ data, change, post, connected }: { data: Data; change: (d: Data) => void; post: (p: string, body: unknown) => Promise<boolean>; connected: boolean }) {
+  const [photo, setPhoto] = useState<File | null>(null); const [preview, setPreview] = useState(""); const [raw, setRaw] = useState(""); const [working, setWorking] = useState(false); const [msg, setMsg] = useState("");
+  const [editing, setEditing] = useState(""); const [slot, setSlot] = useState<SlotKey | "">(""); const [name, setName] = useState(""); const [dose, setDose] = useState(""); const [count, setCount] = useState(1); const [frequency, setFrequency] = useState("");
+  useEffect(() => { if (!photo) { setPreview(""); return; } const url = URL.createObjectURL(photo); setPreview(url); return () => URL.revokeObjectURL(url); }, [photo]);
+  async function recognize() {
+    if (!photo) return; setWorking(true); setMsg("正在运行真实 OCR，请等待中文语言包加载……"); setRaw("");
+    let worker: Awaited<ReturnType<typeof createWorker>> | undefined;
+    try { worker = await createWorker("chi_sim+eng"); const result = await worker.recognize(photo); const text = result.data.text.trim(); setRaw(text); if (text) { const draft = parseOcrLine(text.split(/\r?\n/).find(line => line.trim()) || ""); setName(draft.name); setDose(draft.dose); setFrequency(draft.frequency); setCount(draft.count); } setMsg(text ? "已生成首行候选草稿；请对照原图逐项核对修改，人工确认后才会生效。" : "未识别到文字，请人工录入。影像内容不会自动生成计划。"); }
+    catch (e) { setMsg(`OCR 不可用，请对照照片手工录入：${e instanceof Error ? e.message : "识别失败"}`); }
+    finally { await worker?.terminate(); setWorking(false); }
+  }
+  async function sync(plans: Plan[]) { if (!connected) { setMsg("计划已在本机保存；设备离线，数量尚未同步。连接后点击“同步数量”。"); return; } const ok = await post("/api/medplan", { counts: counts(plans) }); setMsg(ok ? "已保存并同步数量；药品身份仍需人工核对。" : "计划已在本机保存，后端数量同步失败，请重试。"); }
+  function submit(e: React.FormEvent) {
+    e.preventDefault(); const nm = name.trim(), ds = dose.trim(), fr = frequency.trim();
+    if (!slot || !nm || !ds || !fr || !Number.isInteger(count) || count < 1 || count > 3) { setMsg("请填写药名、频次、剂量，数量为 1–3 粒；确认前请核对医嘱。"); return; }
+    const item: Plan = { id: editing || newId(), slot, name: nm, dose: ds, count, frequency: fr, confirmedAt: new Date().toISOString() };
+    const next = editing ? data.plans.map(p => p.id === editing ? item : p) : [...data.plans, item];
+    if (counts(next)[slot] > 3) { setMsg("该格计划合计超过设备支持的 3 粒，请核对。"); return; }
+    change(logEvent({ ...data, plans: next }, "plan", `人工核对${editing ? "更新" : "确认"}计划：${labels[slot]} ${nm} ${ds}，${count} 粒`));
+    setEditing(""); setSlot(""); setName(""); setDose(""); setFrequency(""); setCount(1); void sync(next);
+  }
+  return <><Title title="病历拍照录入" desc="AI 仅转写原文；药名、频次、剂量和药格需家属逐项核对确认，不能作为处方使用。" />
+    <Panel><label style={{ fontSize: 13, fontWeight: 600 }}>拍照或上传病历/用药说明<input aria-label="选择病历图片" type="file" accept="image/*" capture="environment" style={field} onChange={e => { setPhoto(e.target.files?.[0] || null); setRaw(""); }} /></label>{preview && <img alt="待核对的病历照片" src={preview} style={{ width: "100%", maxHeight: 240, objectFit: "contain", borderRadius: 12 }} />}<div style={small}>照片仅在当前页面临时预览，不会上传服务器或永久保存；OCR 语言包首次使用需联网。</div><button style={button} disabled={!photo || working} onClick={() => void recognize()}>{working ? "识别中……" : "真实 OCR 识别"}</button>{raw && <><div style={{ ...small, marginTop: 12 }}>OCR 原文（未经医学验证，可选择一行带入候选草稿，再逐项核对修改）：</div><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12, background: palette.pale, padding: 10 }}>{raw}</pre>{raw.split(/\r?\n/).filter(s => s.trim()).slice(0, 30).map((line, i) => <button key={i} style={{ ...secondary, margin: "0 6px 6px 0", fontSize: 11 }} onClick={() => { const draft = parseOcrLine(line); setName(draft.name); if (draft.dose) { setDose(draft.dose); setCount(draft.count); } if (draft.frequency) setFrequency(draft.frequency); }}>带入第 {i + 1} 行</button>)}</>}</Panel>
+    <Panel><strong>{editing ? "修改并重新确认计划" : "结构化草稿 · 人工核对"}</strong><form onSubmit={submit}><select aria-label="用药时段" style={field} value={slot} onChange={e => setSlot(e.target.value as SlotKey)}><option value="">请选择药格</option>{slots.map(s => <option key={s} value={s}>{labels[s]}药格</option>)}</select><input aria-label="药名" style={field} placeholder="药名（对照原件填写）" value={name} onChange={e => setName(e.target.value)} maxLength={80} /><input aria-label="频次" style={field} placeholder="频次（例如：按医嘱填写）" value={frequency} onChange={e => setFrequency(e.target.value)} maxLength={80} /><input aria-label="剂量" style={field} placeholder="剂量（按医嘱填写）" value={dose} onChange={e => setDose(e.target.value)} maxLength={80} /><label style={small}>该格装药数量（粒）<input aria-label="该格数量" type="number" min="1" max="3" step="1" style={field} value={count} onChange={e => setCount(Number(e.target.value))} /></label><p style={small}>我已逐项对照原件核对；检测到取药并不等于已经服药。</p><button style={button}>人工核对并确认</button></form></Panel>
+    <Panel><strong>已确认计划</strong>{data.plans.length ? data.plans.map(p => <div key={p.id} style={{ borderTop: "1px solid #e2ebe7", padding: "10px 0", fontSize: 13 }}>{labels[p.slot]} · {p.name} · {p.frequency} · {p.dose} · {p.count} 粒<div style={small}>确认：{dateLabel(p.confirmedAt)}</div><button style={{ ...secondary, margin: "6px 6px 0 0" }} onClick={() => { setEditing(p.id); setSlot(p.slot); setName(p.name); setDose(p.dose); setCount(p.count); setFrequency(p.frequency); }}>修改</button><button style={secondary} onClick={() => { const next = data.plans.filter(x => x.id !== p.id); change(logEvent({ ...data, plans: next }, "plan", `删除计划：${p.name}`)); void sync(next); }}>删除</button></div>) : <Empty>尚未确认任何用药计划。</Empty>}<button style={secondary} onClick={() => void sync(data.plans)}>同步数量到设备</button><div style={small}>当前 /api/period 仅切换时段；经人工确认的三个时段数量通过新增 /api/medplan 同步。</div></Panel>
+    {msg && <p role="status" style={{ color: palette.warning, fontSize: 13 }}>{msg}</p>}
+  </>;
 }
-
-function AlertIcon({ type, color, size = 16 }: { type: string; color: string; size?: number }) {
-  if (type === "octagon") return <AlertOctagon size={size} color={color} />;
-  if (type === "triangle") return <AlertTriangle size={size} color={color} />;
-  if (type === "info") return <Info size={size} color={color} />;
-  return <CheckCircle2 size={size} color={color} />;
+function Inventory({ data, change }: { data: Data; change: (d: Data) => void }) {
+  const [name, setName] = useState(""); const [quantity, setQuantity] = useState(1); const [expiry, setExpiry] = useState(""); const [error, setError] = useState("");
+  function submit(e: React.FormEvent) { e.preventDefault(); if (!name.trim() || !expiry || !Number.isInteger(quantity) || quantity < 0) { setError("请填写药名、非负整数库存数量和有效期。"); return; } const med: Medicine = { id: newId(), name: name.trim(), quantity, expiry }; change(logEvent({ ...data, medicines: [med, ...data.medicines] }, "inventory", `录入库存：${med.name}，${med.quantity} 粒，有效期 ${med.expiry}`)); setName(""); setExpiry(""); setQuantity(1); setError(""); }
+  return <><Title title="保质期管理" desc="过期药不可用于装药；临期（含当天，≤30 天）需人工复核。" /><Panel><strong>添加药品库存</strong><form onSubmit={submit}><input aria-label="库存药名" placeholder="药名" style={field} value={name} onChange={e => setName(e.target.value)} /><input aria-label="库存数量" type="number" min="0" step="1" style={field} value={quantity} onChange={e => setQuantity(Number(e.target.value))} /><label style={small}>有效期<input aria-label="有效期" type="date" style={field} value={expiry} onChange={e => setExpiry(e.target.value)} /></label><button style={button}>确认录入</button></form></Panel>{error && <p role="alert" style={{ color: palette.error }}>{error}</p>}{!data.medicines.length && <Panel><Empty>暂无录入的药品库存。</Empty></Panel>}{data.medicines.map(m => <Panel key={m.id}><div style={{ color: !m.handledAt && expiryState(m) === "expired" ? palette.error : palette.ink }}><strong>{m.name}</strong> · 库存 {m.quantity} 粒</div><div style={small}>有效期：{m.expiry} · {m.handledAt ? `已处理 ${dateLabel(m.handledAt)}` : expiryState(m) === "expired" ? "已过期，禁止装药" : expiryState(m) === "soon" ? `临期，剩余 ${expiryDays(m.expiry)} 天` : "未临期"}</div>{!m.handledAt && expiryState(m) !== "ok" && <button style={{ ...secondary, marginTop: 8 }} onClick={() => change(logEvent({ ...data, medicines: data.medicines.map(x => x.id === m.id ? { ...x, handledAt: new Date().toISOString() } : x) }, "expiry", `已标记处理${expiryState(m) === "expired" ? "过期" : "临期"}药品：${m.name}`))}>建议处理 · 标记已处理</button>}</Panel>)}</>;
 }
-
-// ─── Status bar ──────────────────────────────────────────────────
-
-function StatusBar() {
-  return (
-    <div style={{
-      height: 50, position: "relative", zIndex: 3,
-      display: "flex", alignItems: "flex-end",
-      justifyContent: "space-between", padding: "0 22px 10px",
-    }}>
-      <span style={{ fontSize: 15, fontWeight: 700, color: C.fg }}>9:41</span>
-      <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
-        <svg width="16" height="11" viewBox="0 0 16 11">
-          <rect x="0" y="7" width="2.5" height="4" rx="0.8" fill={C.fg} />
-          <rect x="4" y="5" width="2.5" height="6" rx="0.8" fill={C.fg} />
-          <rect x="8" y="2.5" width="2.5" height="8.5" rx="0.8" fill={C.fg} />
-          <rect x="12" y="0" width="2.5" height="11" rx="0.8" fill={C.fg} opacity="0.25" />
-        </svg>
-        <Wifi size={13} color={C.fg} />
-        <svg width="25" height="12" viewBox="0 0 25 12" fill="none">
-          <rect x="0.5" y="0.5" width="20" height="11" rx="2.5" stroke={C.fg} strokeWidth="1" />
-          <rect x="2" y="2" width="16.5" height="8" rx="1.5" fill={C.fg} />
-          <path d="M21.5 4v4c1.1-.8 1.1-3.2 0-4Z" fill={C.fg} />
-        </svg>
-      </div>
-    </div>
-  );
+function ReviewScreen({ data, status, change, post }: { data: Data; status: Status | null; change: (d: Data) => void; post: (p: string, body?: unknown) => Promise<boolean> }) {
+  const [slot, setSlot] = useState<SlotKey>("Morning"); const [lot, setLot] = useState(""); const [photo, setPhoto] = useState<File | null>(null); const [photoUrl, setPhotoUrl] = useState(""); const [confirmed, setConfirmed] = useState(false); const [message, setMessage] = useState("");
+  useEffect(() => { if (!photo) { setPhotoUrl(""); return; } const url = URL.createObjectURL(photo); setPhotoUrl(url); return () => URL.revokeObjectURL(url); }, [photo]);
+  const plans = data.plans.filter(p => p.slot === slot); const planned = counts(data.plans)[slot];
+  const actual = status?.slots[slot]?.pill_count; const selected = data.medicines.find(m => m.id === lot);
+  const lots = data.medicines.filter(m => !m.handledAt && plans.some(p => p.name === m.name));
+  function check() {
+    if (!status || actual === undefined || !photo || !confirmed) { setMessage("请先连接设备、拍照记录，并人工确认药品身份；照片只在当前页面临时保留。"); return; }
+    let result = "数量匹配，人工已核对药品身份"; let passed = true;
+    if (status.slots[slot].expected_count !== planned) { result = "设备计划数量与本地计划不同步，请先同步数量"; passed = false; }
+    else if (actual !== planned) { result = `数量不符：实际 ${actual} 粒，计划 ${planned} 粒`; passed = false; }
+    else if ((planned > 0 && (status.slots[slot].confidence < .28 || !status.slots[slot].present))) { result = "视觉不确定，请重新检查药格"; passed = false; }
+    else if (plans.length > 1) { result = "该格包含多种药品，当前无法逐种核对批次，请人工处理"; passed = false; }
+    else if (plans.length && (!selected || !plans.some(p => p.name === selected.name))) { result = "未选择对应药品批次，身份需人工确认"; passed = false; }
+    else if (selected && selected.quantity < planned) { result = "库存数量不足，无法确认装药"; passed = false; }
+    else if (selected && expiryState(selected) === "expired") { result = "药品已过期，禁止装药"; passed = false; }
+    else if (selected && expiryState(selected) === "soon") { result = "药品临期（≤30 天），请更换非临期批次后复核"; passed = false; }
+    const now = new Date().toISOString();
+    const record = { id: newId(), at: now, slot, count: actual, expected: planned, planName: plans.map(p => p.name).join("、") || "计划为空", imageName: photo.name, result, passed };
+    change(logEvent({ ...data, reviews: [record, ...data.reviews] }, "review", `${labels[slot]}药格复核：${result}（仅核对药格，不代表已吞服）`)); setMessage(result); setConfirmed(false);
+  }
+  const latest = slots.map(s => data.reviews.find(r => r.slot === s));
+  const lastFinish = data.events.find(e => e.type === "review" && e.message.startsWith("三个药格已逐格完成"));
+  const complete = !!status && latest.every((r, i) => { const s = slots[i]; return !!r?.passed && r.expected === counts(data.plans)[s] && r.count === status.slots[s].pill_count && r.expected === status.slots[s].expected_count && new Date(r.at).getTime() >= Math.max(0, ...data.plans.filter(p => p.slot === s).map(p => new Date(p.confirmedAt).getTime())); }) && (!lastFinish || latest.some(r => r && new Date(r.at).getTime() > new Date(lastFinish.at).getTime()));
+  return <><Title title="装药复核" desc="照片仅用于家属对照，不进行药品身份视觉识别；药格数量读取当前设备 /api/status。" />
+    {!status && <Panel><span role="alert" style={{ color: palette.error }}>设备连接失败，无法复核真实药格数量。</span></Panel>}
+    <Panel><strong>逐格拍照核对</strong><select aria-label="复核药格" style={field} value={slot} onChange={e => { setSlot(e.target.value as SlotKey); setLot(""); setPhoto(null); setConfirmed(false); }}>{slots.map(s => <option value={s} key={s}>{labels[s]}药格</option>)}</select><div style={{ fontSize: 13, lineHeight: 1.8 }}>计划：{plans.map(p => `${p.name} ${p.count} 粒`).join("；") || "该格暂无计划，应为空"}<br />计划合计：{planned} 粒 · 设备检测：{actual === undefined ? "未连接" : `${actual} 粒`}</div>
+      <label style={small}>拍摄或上传该格照片<input aria-label="药格照片" type="file" accept="image/*" capture="environment" style={field} onChange={e => setPhoto(e.target.files?.[0] || null)} /></label>{photo && <div style={small}>已选择照片：{photo.name}（仅当前页面可查看；记录只保留文件名）</div>}{photoUrl && <img alt="本格待人工核对的照片" src={photoUrl} style={{ width: "100%", maxHeight: 220, objectFit: "contain", borderRadius: 10 }} />}
+      {plans.length > 0 && <select aria-label="装药药品批次" style={field} value={lot} onChange={e => setLot(e.target.value)}><option value="">选择实际使用的库存批次</option>{lots.map(m => <option key={m.id} value={m.id}>{m.name} · {m.expiry} · {m.quantity}粒{expiryState(m) === "expired" ? "（已过期）" : expiryState(m) === "soon" ? "（临期）" : ""}</option>)}</select>}
+      {plans.length > 1 && <p style={{ color: palette.warning, fontSize: 12 }}>当前版本一格多种药只能核对总数，无法逐种核对；请人工核对每种药及其批次。</p>}
+      <label style={{ ...small, display: "block", margin: "10px 0" }}><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} /> 我已对照用药计划、药品包装与照片人工核对药品身份</label><button style={button} onClick={check}>保存本格复核结果</button>
+      <div style={{ ...small, marginTop: 8 }}>照片不是识别输入；数量来自药盒传感/视觉模拟器，无法证明药品品种或吞咽。</div>
+    </Panel><Panel><strong>各格最新复核</strong>{slots.map((s, i) => <div key={s} style={{ marginTop: 10, fontSize: 13 }}>{labels[s]}：{latest[i] ? `${latest[i]?.passed ? "✅" : "⚠️"} ${latest[i]?.result} · ${dateLabel(latest[i]!.at)}` : "尚未复核"}</div>)}<button style={{ ...button, marginTop: 16, opacity: complete ? 1 : .5 }} disabled={!complete} onClick={() => { change(logEvent(data, "review", "三个药格已逐格完成装药复核（非吞咽确认）")); setMessage("装药复核完成，记录已保存。"); }}>全部复核通过，完成装药</button></Panel>{message && <p role="status" style={{ color: palette.warning }}>{message}</p>}</>;
 }
-
-// ─── Bottom navigation ────────────────────────────────────────────
-
-function BottomNav({ current, onChange }: { current: Screen; onChange: (s: Screen) => void }) {
-  const tabs: { id: Screen; label: string; Icon: React.ComponentType<{ size: number; strokeWidth: number }> }[] = [
-    { id: "dashboard", label: "首页", Icon: Home },
-    { id: "live", label: "药盒", Icon: Camera },
-    { id: "alerts", label: "提醒", Icon: Bell },
-    { id: "history", label: "记录", Icon: CalendarDays },
-    { id: "settings", label: "设置", Icon: Settings },
-  ];
-  return (
-    <div style={{
-      height: 78, flexShrink: 0, position: "relative", zIndex: 3,
-      background: "rgba(240,239,234,0.82)",
-      backdropFilter: "blur(24px) saturate(180%)",
-      WebkitBackdropFilter: "blur(24px) saturate(180%)",
-      borderTop: "1px solid rgba(255,255,255,0.7)",
-      boxShadow: "0 -1px 0 rgba(24,38,47,0.06)",
-      display: "flex", alignItems: "flex-start", paddingTop: 6,
-    }}>
-      {tabs.map(({ id, label, Icon }) => {
-        const active = current === id;
-        return (
-          <button key={id} onClick={() => onChange(id)} style={{
-            flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
-            background: "none", border: "none", cursor: "pointer",
-            color: active ? C.teal : C.fgMuted, padding: "6px 0", position: "relative",
-          }}>
-            {id === "alerts" && (
-              <span style={{
-                position: "absolute", top: 2, right: "calc(50% - 18px)",
-                width: 7, height: 7, borderRadius: "50%", background: C.red,
-                border: "2px solid rgba(240,239,234,0.9)",
-              }} />
-            )}
-            <Icon size={21} strokeWidth={active ? 2.2 : 1.8} />
-            <span style={{ fontSize: 10, fontWeight: active ? 600 : 400, lineHeight: 1 }}>{label}</span>
-            {active && (
-              <span style={{
-                position: "absolute", bottom: 0, left: "50%", transform: "translateX(-50%)",
-                width: 18, height: 2.5, borderRadius: 2, background: C.teal,
-              }} />
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
+function DeviceScreen({ status, post, busy, refresh }: { status: Status | null; post: (p: string, body?: unknown) => Promise<boolean>; busy: boolean; refresh: () => Promise<Status | null> }) { return <><Title title="药盒实时状态" desc="显示后端 OpenCV 模拟检测数据；本页不提供真实视频画面，也不判断吞咽。" /><Panel><button style={secondary} onClick={() => void refresh()}><RefreshCw size={14} /> 刷新</button>{!status ? <Empty>后端未连接，无法显示实时状态。</Empty> : <><p style={small}>更新时间：{dateLabel(status.updated_at)} · 当前时段：{status.current_period_label}</p>{slots.map(s => <div style={{ borderTop: "1px solid #e1eae6", padding: "12px 0", fontSize: 13 }} key={s}><strong>{labels[s]}药格</strong> · 检测到 {status.slots[s].pill_count} 粒 / 设备计划 {status.slots[s].expected_count} 粒<br /><span style={small}>{status.slots[s].status_label} · 置信度 {status.slots[s].confidence}</span></div>)}</>}</Panel><Panel><strong>演示操作（真实调用后端模拟接口）</strong><p style={small}>只能模拟药格数量与时段，不能模拟“已服药”。</p>{slots.map(s => <div key={s} style={{ marginBottom: 14, fontSize: 13 }}><strong>{labels[s]}：</strong><button disabled={busy || !status} style={secondary} onClick={() => void post("/api/period", { period: s })}>设为当前</button>{[0,1,2,3].map(n => <button key={n} disabled={busy || !status} onClick={() => void post("/api/simulate/set", { slot: s, count: n })} style={{ ...secondary, margin: "5px 4px 0 0", padding: "6px 9px" }}>{n}粒</button>)}</div>)}<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><button disabled={busy || !status} style={secondary} onClick={() => void post("/api/simulate/take", { slot: status?.current_period, count: 0 })}>模拟当前药格取空</button><button disabled={busy || !status} style={secondary} onClick={() => void post("/api/reset")}>重置模拟器</button></div><p style={small}>重置会清空后端设备事件；不会删除本机已核对的计划及历史，请按需重新同步数量。</p></Panel></>; }
+function SettingsScreen({ data, post, busy, status }: { data: Data; post: (p: string, body?: unknown) => Promise<boolean>; busy: boolean; status: Status | null }) { return <><Title title="设置" desc="设备时段和演示控制；成员与计划请通过首页入口管理。" /><Panel><strong>当前时段</strong><p style={small}>{status ? status.current_period_label : "设备未连接"}</p>{slots.map(s => <button key={s} disabled={busy || !status} style={{ ...secondary, marginRight: 7 }} onClick={() => void post("/api/period", { period: s })}>{labels[s]}</button>)}</Panel><Panel><strong>本机数据</strong><p style={small}>成员 {data.members.length} 位、确认计划 {data.plans.length} 项、库存 {data.medicines.length} 项；存于当前浏览器 localStorage，不跨设备同步。</p><div style={small}>后端设备事件只保留最近 50 条且重启清空；本机操作记录最多 300 条。</div></Panel></>; }
+function AlertsScreen({ events, data, status, refresh }: { events: ApiEvent[]; data: Data; status: Status | null; refresh: () => Promise<Status | null> }) {
+  const alarms = events.filter(e => e.kind === "critical" || e.kind === "warning");
+  const stock = data.medicines.filter(m => !m.handledAt && expiryState(m) !== "ok");
+  return <><Title title="用药提醒" desc="仅显示后端实际警报和已录入库存推导的临期提醒；不推断是否吞服。" /><button style={{ ...secondary, marginBottom: 12 }} onClick={() => void refresh()}>刷新设备提醒</button>{!status && <Panel><span role="alert" style={{ color: palette.error }}>设备未连接：设备警报不可用，不代表没有警报。</span></Panel>}{stock.map(m => <Panel key={m.id}><AlertTriangle size={16} color={palette.warning} /> <strong>{m.name}：{expiryState(m) === "expired" ? "已过期，禁止装药" : `临期（${expiryDays(m.expiry)} 天）`}</strong><div style={small}>库存有效期：{m.expiry} · 请到保质期管理页处理</div></Panel>)}{status && alarms.map(e => <Panel key={e.id}><strong style={{ color: e.kind === "critical" ? palette.error : palette.warning }}>{e.kind === "critical" ? "严重警报" : "设备警告"}</strong><div style={{ fontSize: 13, marginTop: 8, overflowWrap: "anywhere" }}>{e.message}</div><div style={small}>设备时间：{e.time}（后端仅提供时分秒）</div></Panel>)}{status && !alarms.length && !stock.length && <Panel><Empty>暂无设备警报或临期库存提醒。</Empty></Panel>}</>;
 }
-
-// ─── Screen 1 · Dashboard ────────────────────────────────────────
-
-function DashboardScreen({ onNav }: { onNav: (s: Screen) => void }) {
-  const r = 52, circ = 2 * Math.PI * r;
-
-  return (
-    <div style={{ paddingBottom: 36 }}>
-      {/* Gradient teal header */}
-      <div style={{
-        background: C.headerBgFallback,
-        WebkitBackgroundImage: C.headerBgWebkit,
-        backgroundImage: C.headerBg,
-        padding: "20px 18px 36px",
-        position: "relative", overflow: "hidden",
-      }}>
-        {/* Decorative circle */}
-        <div style={{
-          position: "absolute", right: -60, top: -60,
-          width: 200, height: 200, borderRadius: "50%",
-          background: "rgba(255,255,255,0.08)",
-        }} />
-        <div style={{
-          position: "absolute", right: -20, top: 40,
-          width: 100, height: 100, borderRadius: "50%",
-          background: "rgba(255,255,255,0.05)",
-        }} />
-
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "relative" }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-              <div style={{
-                width: 30, height: 30, borderRadius: "50%",
-                ...GLASS_DARK,
-                display: "flex", alignItems: "center", justifyContent: "center",
-              }}>
-                <User size={15} color={C.teal} />
-              </div>
-              <span style={{ fontSize: 13, color: C.fgMid }}>监护对象</span>
-            </div>
-            <div style={{ fontSize: 28, fontWeight: 700, color: C.fg, lineHeight: 1.1 }}>外婆</div>
-            <div style={{ fontSize: 13, color: C.fgMid, marginTop: 5 }}>今天已服早上药，下一次 12:00</div>
-          </div>
-          <div style={{
-            display: "flex", alignItems: "center", gap: 6,
-            ...GLASS_DARK,
-            borderRadius: 20, padding: "5px 12px",
-          }}>
-            <Dot color={C.green} pulse />
-            <span style={{ fontSize: 12, color: C.fg, fontWeight: 500 }}>设备在线</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Progress card — overlaps header */}
-      <div style={{ padding: "0 16px", marginTop: -22 }}>
-        <GlassCard style={{ padding: "18px 20px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-            <svg width={108} height={108} viewBox="0 0 108 108" style={{ flexShrink: 0, overflow: "visible" }}>
-              {/* Track glow */}
-              <circle cx="54" cy="54" r={r} fill="none" stroke="rgba(58,136,130,0.12)" strokeWidth="13" />
-              <circle cx="54" cy="54" r={r} fill="none" stroke="rgba(220,220,215,0.6)" strokeWidth="9" />
-              <circle
-                cx="54" cy="54" r={r} fill="none"
-                stroke={C.teal} strokeWidth="9"
-                strokeDasharray={`${circ / 3} ${(circ * 2) / 3}`}
-                strokeLinecap="round"
-                transform="rotate(-90 54 54)"
-                style={{ filter: "drop-shadow(0 0 5px rgba(58,136,130,0.5))" }}
-              />
-              <text x="54" y="50" textAnchor="middle" fill={C.fg} fontSize="22" fontWeight="700" fontFamily="inherit">1/3</text>
-              <text x="54" y="66" textAnchor="middle" fill={C.fgMuted} fontSize="10.5" fontFamily="inherit">今日服药</text>
-            </svg>
-
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12, color: C.fgMuted, marginBottom: 4 }}>今天已完成</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.fg, marginBottom: 12 }}>1 / 3 次</div>
-              <div style={{
-                display: "flex", alignItems: "center", gap: 8,
-                ...GLASS_TEAL, borderRadius: 12, padding: "8px 12px",
-              }}>
-                <Clock size={13} color={C.amber} style={{ flexShrink: 0 }} />
-                <div>
-                  <div style={{ fontSize: 11, color: C.fgMuted }}>下一次：美金刚片</div>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: C.amber }}>12:00</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </GlassCard>
-      </div>
-
-      {/* Slot cards */}
-      <div style={{ padding: "14px 16px 0" }}>
-        <SectionHeader>今日用药</SectionHeader>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {MEDICINE_PLAN.map((s, i) => (
-            <GlassCard key={i} style={{ padding: "13px 16px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <div style={{
-                  width: 44, height: 44, borderRadius: 13,
-                  background: s.filled ? "rgba(234,244,243,0.9)" : "rgba(242,241,238,0.7)",
-                  border: "1px solid rgba(255,255,255,0.7)",
-                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-                  flexShrink: 0,
-                }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: s.filled ? C.teal : C.fgMuted }}>{s.label}</span>
-                  <span style={{ fontSize: 9, color: s.filled ? C.teal : C.fgMuted, opacity: 0.7 }}>{s.en}</span>
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
-                    <span style={{ fontSize: 15, fontWeight: 600, color: C.fg }}>{s.medicine}</span>
-                    <span style={{
-                      fontSize: 12, fontWeight: 500, color: s.color,
-                      background: s.bg, padding: "2px 10px", borderRadius: 99,
-                      backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
-                      border: "1px solid rgba(255,255,255,0.5)",
-                    }}>{s.status}</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: C.fgMuted, marginBottom: 7 }}>{s.time} · {s.dose}</div>
-                  <div style={{ height: 4, background: "rgba(220,218,214,0.6)", borderRadius: 2 }}>
-                    <div style={{
-                      width: s.filled ? "100%" : "0%", height: "100%",
-                      background: s.filled ? `linear-gradient(90deg, ${C.green}, #22C97E)` : "transparent",
-                      borderRadius: 2, transition: "width 0.5s",
-                      boxShadow: s.filled ? "0 0 6px rgba(23,168,118,0.5)" : "none",
-                    }} />
-                  </div>
-                </div>
-              </div>
-            </GlassCard>
-          ))}
-        </div>
-      </div>
-
-      <div style={{ padding: "14px 16px 0" }}>
-        <SectionHeader>需要关注</SectionHeader>
-        <GlassCard style={{ padding: "13px 14px" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            {SAFETY_STATES.map((s) => (
-              <div key={s.key} style={{
-                background: s.bg,
-                border: "1px solid rgba(255,255,255,0.65)",
-                borderRadius: 12,
-                padding: "9px 10px",
-                minHeight: 56,
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
-                  <Dot color={s.color} pulse={s.key === "正常看护"} />
-                  <span style={{ fontSize: 11, color: s.color, fontWeight: 700 }}>{s.key}</span>
-                </div>
-                <div style={{ fontSize: 12, color: C.fgMid, lineHeight: 1.25 }}>{s.label}</div>
-              </div>
-            ))}
-          </div>
-        </GlassCard>
-      </div>
-
-      {/* Alert strip */}
-      <div style={{ padding: "14px 16px 0" }}>
-        <GlassCard style={{ padding: "12px 14px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{
-              width: 36, height: 36, borderRadius: 11,
-              background: C.greenBg, border: "1px solid rgba(255,255,255,0.6)",
-              backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
-              display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-            }}>
-              <CheckCircle2 size={17} color={C.green} />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 11, color: C.fgMuted }}>药盒正在看护中</div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>吃错、漏吃或药量不对会提醒</div>
-            </div>
-            <button onClick={() => onNav("alerts")} style={{ background: "none", border: "none", cursor: "pointer", color: C.fgMuted }}>
-              <ChevronRight size={18} />
-            </button>
-          </div>
-        </GlassCard>
-      </div>
-
-      {/* Quick actions */}
-      <div style={{ padding: "14px 16px 0", display: "flex", gap: 10 }}>
-        <button onClick={() => onNav("live")} style={{
-          flex: 2, padding: "13px",
-          background: "linear-gradient(135deg, #3E9890, #2F7A74)",
-          color: "white", border: "none", borderRadius: 14,
-          fontSize: 14, fontWeight: 600, cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-          boxShadow: "0 4px 16px rgba(58,136,130,0.35), 0 1px 3px rgba(0,0,0,0.1)",
-        }}>
-          <Camera size={15} />查看药盒画面
-        </button>
-        <button style={{
-          flex: 1, padding: "13px", ...GLASS,
-          borderRadius: 14, fontSize: 14, fontWeight: 600, cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
-          color: C.fg,
-        }}>
-          <Phone size={15} />联系
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ─── Pillbox camera SVG ───────────────────────────────────────────
-
-function PillboxCamera() {
-  return (
-    <svg viewBox="0 0 350 196" width="100%" height="100%" style={{ display: "block" }}>
-      <defs>
-        <radialGradient id="vig" cx="50%" cy="50%" r="70%">
-          <stop offset="0%" stopColor="transparent" />
-          <stop offset="100%" stopColor="rgba(0,0,0,0.55)" />
-        </radialGradient>
-        <filter id="glow-green">
-          <feGaussianBlur stdDeviation="2.5" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
-        <filter id="glow-amber">
-          <feGaussianBlur stdDeviation="2" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
-      </defs>
-
-      <rect width="350" height="196" fill="#0C1720" />
-      {[1,2,3,4,5,6].map(i => (
-        <line key={`h${i}`} x1="0" y1={i*28} x2="350" y2={i*28} stroke="#111E28" strokeWidth="0.5" />
-      ))}
-      {[1,2,3,4,5,6,7,8,9].map(i => (
-        <line key={`v${i}`} x1={i*39} y1="0" x2={i*39} y2="196" stroke="#111E28" strokeWidth="0.5" />
-      ))}
-
-      {/* Pillbox body */}
-      <rect x="22" y="40" width="306" height="122" rx="13" fill="#182635" stroke="#243545" strokeWidth="1.5" />
-      <line x1="124" y1="52" x2="124" y2="150" stroke="#243545" strokeWidth="1" />
-      <line x1="226" y1="52" x2="226" y2="150" stroke="#243545" strokeWidth="1" />
-
-      {/* Morning slot */}
-      <text x="73" y="60" textAnchor="middle" fill="#456070" fontSize="9.5" fontFamily="system-ui">早上</text>
-      <circle cx="73" cy="104" r="33" fill="#0D1B26" stroke="#1E3040" strokeWidth="1" />
-      <circle cx="59" cy="104" r="10.5" fill="#4A8BE8" opacity="0.88" />
-      <line x1="59" y1="96" x2="59" y2="112" stroke="rgba(255,255,255,0.18)" strokeWidth="0.8" />
-      <circle cx="87" cy="104" r="10.5" fill="#4A8BE8" opacity="0.88" />
-      <line x1="87" y1="96" x2="87" y2="112" stroke="rgba(255,255,255,0.18)" strokeWidth="0.8" />
-      {/* Green glow detection box */}
-      <rect x="36" y="67" width="74" height="74" rx="3" fill="rgba(30,214,154,0.06)" stroke="#1ED69A" strokeWidth="1.5" strokeDasharray="5,3" filter="url(#glow-green)" />
-      <rect x="36" y="67" width="60" height="15" rx="2.5" fill="#1ED69A" />
-      <text x="39" y="78" fill="white" fontSize="8.5" fontFamily="monospace" fontWeight="600">早上 · 0.93 ✓</text>
-      <text x="36" y="152" fill="#1ED69A" fontSize="8" fontFamily="monospace">tablets × 2</text>
-
-      {/* Noon slot */}
-      <text x="175" y="60" textAnchor="middle" fill="#456070" fontSize="9.5" fontFamily="system-ui">中午</text>
-      <circle cx="175" cy="104" r="33" fill="#0D1B26" stroke="#1E3040" strokeWidth="1" />
-      <circle cx="175" cy="104" r="11.5" fill="#E8A840" opacity="0.88" />
-      <line x1="175" y1="95.5" x2="175" y2="112.5" stroke="rgba(255,255,255,0.18)" strokeWidth="0.8" />
-      <rect x="138" y="67" width="74" height="74" rx="3" fill="rgba(245,168,32,0.06)" stroke="#F5A820" strokeWidth="1.5" strokeDasharray="5,3" filter="url(#glow-amber)" />
-      <rect x="138" y="67" width="60" height="15" rx="2.5" fill="#F5A820" />
-      <text x="141" y="78" fill="white" fontSize="8.5" fontFamily="monospace" fontWeight="600">中午 · 0.91 ●</text>
-      <text x="138" y="152" fill="#F5A820" fontSize="8" fontFamily="monospace">tablets × 1</text>
-
-      {/* Evening slot */}
-      <text x="277" y="60" textAnchor="middle" fill="#456070" fontSize="9.5" fontFamily="system-ui">晚上</text>
-      <circle cx="277" cy="104" r="33" fill="#0D1B26" stroke="#1E3040" strokeWidth="1" />
-      <rect x="262" y="89" width="24" height="10" rx="5" fill="#C85868" opacity="0.86" />
-      <line x1="274" y1="89" x2="274" y2="99" stroke="rgba(0,0,0,0.2)" strokeWidth="0.8" />
-      <rect x="262" y="102" width="24" height="10" rx="5" fill="#C85868" opacity="0.86" />
-      <line x1="274" y1="102" x2="274" y2="112" stroke="rgba(0,0,0,0.2)" strokeWidth="0.8" />
-      <rect x="262" y="115" width="24" height="10" rx="5" fill="#C85868" opacity="0.86" />
-      <line x1="274" y1="115" x2="274" y2="125" stroke="rgba(0,0,0,0.2)" strokeWidth="0.8" />
-      <rect x="240" y="67" width="74" height="74" rx="3" fill="rgba(245,168,32,0.06)" stroke="#F5A820" strokeWidth="1.5" strokeDasharray="5,3" filter="url(#glow-amber)" />
-      <rect x="240" y="67" width="60" height="15" rx="2.5" fill="#F5A820" />
-      <text x="243" y="78" fill="white" fontSize="8.5" fontFamily="monospace" fontWeight="600">晚上 · 0.89 ●</text>
-      <text x="240" y="152" fill="#F5A820" fontSize="8" fontFamily="monospace">capsules × 3</text>
-
-      <rect width="350" height="196" fill="url(#vig)" />
-
-      {/* Corners */}
-      <g stroke="#2A4A5E" strokeWidth="1.3" opacity="0.65">
-        <line x1="0" y1="0" x2="14" y2="0" /><line x1="0" y1="0" x2="0" y2="14" />
-        <line x1="336" y1="0" x2="350" y2="0" /><line x1="350" y1="0" x2="350" y2="14" />
-        <line x1="0" y1="182" x2="0" y2="196" /><line x1="0" y1="196" x2="14" y2="196" />
-        <line x1="336" y1="196" x2="350" y2="196" /><line x1="350" y1="182" x2="350" y2="196" />
-      </g>
-    </svg>
-  );
-}
-
-// ─── Screen 2 · Live Camera ───────────────────────────────────────
-
-function LiveScreen({ status, connected, loading, refresh, post }: {
-  status: ApiStatus;
-  connected: boolean;
-  loading: boolean;
-  refresh: () => Promise<void>;
-  post: (path: string, body?: unknown) => Promise<void>;
-}) {
-  const [refreshing, setRefreshing] = useState(false);
-  const latestEvents = status.events.length
-    ? status.events
-    : [{ id: "empty", time: "--:--", kind: "info" as const, message: "等待后端生成取药或提醒事件" }];
-
-  return (
-    <div style={{ paddingBottom: 36 }}>
-      <div style={{ padding: "16px 16px 10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div>
-          <h2 style={{ fontSize: 20, fontWeight: 700, color: C.fg, margin: 0 }}>药盒画面</h2>
-          <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 2 }}>看今天的药有没有准备好</div>
-        </div>
-        <button
-          onClick={() => { setRefreshing(true); refresh().finally(() => setTimeout(() => setRefreshing(false), 400)); }}
-          style={{
-            ...GLASS_TEAL, borderRadius: 11, padding: "7px 13px",
-            color: C.teal, cursor: "pointer", border: "1px solid rgba(255,255,255,0.65)",
-            display: "flex", alignItems: "center", gap: 5, fontSize: 13, fontWeight: 500,
-          }}
-        >
-          <RefreshCw size={13} style={{ animation: refreshing || loading ? "spin 0.8s linear infinite" : "none" }} />
-          刷新画面
-        </button>
-      </div>
-
-      {/* Camera */}
-      <div style={{ margin: "0 16px" }}>
-        <div style={{
-          borderRadius: 18, overflow: "hidden",
-          border: "1px solid rgba(255,255,255,0.3)",
-          position: "relative", background: "#0C1720", lineHeight: 0,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.25)",
-        }}>
-          <PillboxCamera />
-
-          <div style={{
-            position: "absolute", left: 0, right: 0, height: 2, pointerEvents: "none",
-            background: "linear-gradient(90deg, transparent, rgba(30,214,154,0.65), transparent)",
-            animation: "scanLine 3s ease-in-out infinite", top: 0,
-          }} />
-
-          <div style={{ position: "absolute", top: 10, left: 12, display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{
-              display: "inline-flex", alignItems: "center", gap: 4,
-              background: "rgba(196,48,48,0.88)", color: "white",
-              fontSize: 10, fontWeight: 800, letterSpacing: "0.1em",
-              padding: "2px 7px", borderRadius: 4,
-              backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
-            }}>
-              <span style={{ width: 5, height: 5, borderRadius: "50%", background: "rgba(255,180,180,0.95)", animation: "blink 1.2s ease-in-out infinite", display: "inline-block" }} />
-              LIVE
-            </span>
-            <span style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", color: "#6A8FA0", fontSize: 10, fontFamily: "monospace", padding: "2px 7px", borderRadius: 4 }}>
-              {status.updated_at ? new Date(status.updated_at).toLocaleTimeString() : "--:--:--"}
-            </span>
-          </div>
-
-          <div style={{ position: "absolute", bottom: 18, left: 10, right: 10, display: "flex", justifyContent: "space-between" }}>
-            <span style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", color: "#4ABFA0", fontSize: 9.5, fontFamily: "monospace", padding: "2px 7px", borderRadius: 4 }}>
-              {connected ? status.detector : "后端未连接"}
-            </span>
-            <span style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", color: "#6A8FA0", fontSize: 9.5, fontFamily: "monospace", padding: "2px 7px", borderRadius: 4 }}>
-              {status.current_period_label} · {status.system_state}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Status chips */}
-      <div style={{ display: "flex", gap: 7, padding: "10px 16px 0", flexWrap: "wrap" }}>
-        <Chip color={connected ? C.green : C.amber} bg={connected ? C.greenBg : C.amberBg}>{connected ? "FastAPI 已连接" : "等待 FastAPI"}</Chip>
-        <Chip color={C.amber} bg={C.amberBg}>下一次：{status.next_reminder.time}</Chip>
-        <Chip color={C.fgMid} bg="rgba(242,241,238,0.8)">状态机：{status.system_state}</Chip>
-      </div>
-
-      {/* Detection results */}
-      <div style={{ padding: "12px 16px 0" }}>
-        <SectionHeader>药格情况</SectionHeader>
-        <GlassCard>
-          {MEDICINE_PLAN.map((row, i) => {
-            const slot = status.slots[SLOT_ORDER[i]];
-            const ok = slot.pill_count === slot.expected_count;
-            return (
-            <div key={i} style={{
-              padding: "11px 16px",
-              borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none",
-              display: "flex", alignItems: "center", gap: 12,
-            }}>
-              <Dot color={ok ? C.green : C.orange} />
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>{row.label} {row.time}</span>
-                  <span style={{
-                    fontSize: 11, color: ok ? C.green : C.orange,
-                    background: ok ? C.greenBg : C.orangeBg,
-                    padding: "1px 9px", borderRadius: 99,
-                    backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
-                    border: "1px solid rgba(255,255,255,0.5)",
-                  }}>{slot.status_label}</span>
-                </div>
-                <div style={{ display: "flex", gap: 10, marginTop: 3 }}>
-                  <span style={{ fontSize: 12, color: C.fgMuted }}>{row.medicine} · {row.dose}</span>
-                  <span style={{ fontSize: 12, fontFamily: "monospace", color: C.teal }}>当前 {slot.pill_count}/{slot.expected_count}</span>
-                  <span style={{ fontSize: 12, fontFamily: "monospace", color: C.fgMuted }}>conf {slot.confidence}</span>
-                </div>
-              </div>
-            </div>
-          );})}
-        </GlassCard>
-      </div>
-
-      {/* Event log */}
-      <div style={{ padding: "12px 16px 0" }}>
-        <SectionHeader>今天发生了什么</SectionHeader>
-        <GlassCard style={{ padding: "4px 0" }}>
-          {latestEvents.map((ev, i) => (
-            <div key={i} style={{
-              padding: "9px 16px",
-              borderBottom: i === 0 ? "1px solid rgba(255,255,255,0.5)" : "none",
-              display: "flex", alignItems: "center", gap: 10,
-            }}>
-              <span style={{ fontSize: 11, fontFamily: "monospace", color: C.fgMuted, flexShrink: 0 }}>{ev.time}</span>
-              <Dot color={eventColor(ev.kind)} />
-              <span style={{ fontSize: 13, color: C.fg, lineHeight: 1.4 }}>{ev.message}</span>
-            </div>
-          ))}
-        </GlassCard>
-      </div>
-
-      {/* Actions */}
-      <div style={{ padding: "14px 16px 0", display: "flex", gap: 10 }}>
-        <button onClick={() => post("/api/simulate/take", { count: 0 })} style={{
-          flex: 2, padding: "13px",
-          background: "linear-gradient(135deg, #3E9890, #2F7A74)",
-          color: "white", border: "none", borderRadius: 14,
-          fontSize: 14, fontWeight: 600, cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-          boxShadow: "0 4px 16px rgba(58,136,130,0.35)",
-        }}>
-          <Activity size={15} />模拟当前药格取空
-        </button>
-        <button onClick={() => post("/api/reset")} style={{
-          flex: 1, padding: "13px", ...GLASS,
-          borderRadius: 14, fontSize: 14, fontWeight: 600, cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 7, color: C.fg,
-        }}>
-          <RefreshCw size={15} />重置
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ─── Screen 3 · Alerts ───────────────────────────────────────────
-
-function AlertsScreen({ setAlertModal }: {
-  alertModal: number | null;
-  setAlertModal: (i: number | null) => void;
-}) {
-  const active = ALERTS.filter(a => !a.resolved);
-
-  return (
-    <div style={{ paddingBottom: 36 }}>
-      <div style={{ padding: "16px 16px 12px" }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.fg, margin: 0 }}>用药提醒</h2>
-        <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 2 }}>今天还有 {active.length} 条需要关注</div>
-      </div>
-
-      <div style={{ padding: "0 16px" }}>
-        <SectionHeader>未处理</SectionHeader>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {ALERTS.map((alert, i) => {
-            if (alert.resolved) return null;
-            return (
-              <button key={i} onClick={() => setAlertModal(i)}
-                style={{ textAlign: "left", background: "none", border: "none", padding: 0, cursor: "pointer", width: "100%" }}>
-                <div style={{
-                  background: alert.sevBg,
-                  backdropFilter: "blur(18px) saturate(160%)",
-                  WebkitBackdropFilter: "blur(18px) saturate(160%)",
-                  borderRadius: 16,
-                  border: `1px solid rgba(255,255,255,0.65)`,
-                  boxShadow: `0 4px 20px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.8)`,
-                  padding: "14px 16px 14px 20px",
-                  position: "relative", overflow: "hidden",
-                }}>
-                  {/* Left severity bar */}
-                  <div style={{
-                    position: "absolute", left: 0, top: 0, bottom: 0, width: 4,
-                    background: alert.sevColor,
-                    boxShadow: `2px 0 8px ${alert.sevColor}55`,
-                    borderRadius: "16px 0 0 16px",
-                  }} />
-                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, marginBottom: 7 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <AlertIcon type={alert.iconType} color={alert.sevColor} size={16} />
-                      <span style={{ fontSize: 15, fontWeight: 700, color: C.fg }}>{alert.title}</span>
-                    </div>
-                    <span style={{
-                      fontSize: 11, fontWeight: 600, color: alert.sevColor,
-                      background: "rgba(255,255,255,0.8)", padding: "2px 8px", borderRadius: 99, flexShrink: 0,
-                    }}>{alert.severity}</span>
-                  </div>
-                  <p style={{ fontSize: 13, color: C.fgMid, margin: "0 0 9px", lineHeight: 1.45 }}>{alert.desc}</p>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontSize: 11, color: C.fgMuted }}>{alert.slot} · {alert.time}</span>
-                    <span style={{ fontSize: 12, color: alert.sevColor, fontWeight: 500 }}>{alert.action}</span>
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div style={{ padding: "16px 16px 0" }}>
-        <SectionHeader>已解决</SectionHeader>
-        {ALERTS.filter(a => a.resolved).map((alert, i) => (
-          <GlassCard key={i} style={{ padding: "13px 16px", opacity: 0.75 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ width: 34, height: 34, borderRadius: 10, background: C.greenBg, border: "1px solid rgba(255,255,255,0.6)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                <CheckCircle2 size={17} color={C.green} />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>{alert.title}</span>
-                  <span style={{ fontSize: 11, color: C.green, background: C.greenBg, padding: "1px 9px", borderRadius: 99, border: "1px solid rgba(255,255,255,0.5)" }}>已解决</span>
-                </div>
-                <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 2 }}>{alert.desc}</div>
-                <div style={{ fontSize: 11, color: C.fgMuted, marginTop: 2 }}>{alert.time}</div>
-              </div>
-            </div>
-          </GlassCard>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// Alert detail modal
-function AlertModal({ index, onClose }: { index: number; onClose: () => void }) {
-  const alert = ALERTS[index];
-  if (!alert) return null;
-  return (
-    <>
-      <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 10, backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)" }} onClick={onClose} />
-      <div style={{
-        position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 20,
-        background: "rgba(240,239,234,0.88)",
-        backdropFilter: "blur(28px) saturate(180%)",
-        WebkitBackdropFilter: "blur(28px) saturate(180%)",
-        borderRadius: "22px 22px 0 0",
-        border: "1px solid rgba(255,255,255,0.8)",
-        borderBottom: "none",
-        padding: "0 20px 36px",
-        boxShadow: "0 -8px 40px rgba(0,0,0,0.18)",
-        animation: "slideUp 0.3s ease",
-      }}>
-        <div style={{ display: "flex", justifyContent: "center", padding: "12px 0 16px" }}>
-          <div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(0,0,0,0.15)" }} />
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 42, height: 42, borderRadius: 13, background: alert.sevBg, border: "1px solid rgba(255,255,255,0.7)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <AlertIcon type={alert.iconType} color={alert.sevColor} size={20} />
-            </div>
-            <div>
-              <div style={{ fontSize: 17, fontWeight: 700, color: C.fg }}>{alert.title}</div>
-              <span style={{ fontSize: 12, color: alert.sevColor, fontWeight: 600 }}>{alert.severity}</span>
-            </div>
-          </div>
-          <button onClick={onClose} style={{ background: "rgba(0,0,0,0.08)", border: "none", borderRadius: "50%", width: 32, height: 32, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <X size={16} color={C.fgMuted} />
-          </button>
-        </div>
-
-        <div style={{ background: alert.sevBg, backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.6)", borderRadius: 13, padding: "14px 16px", marginBottom: 14 }}>
-          <div style={{ fontSize: 14, color: C.fgMid, lineHeight: 1.55 }}>{alert.desc}</div>
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
-          {[
-            { label: "提醒时间", value: alert.time },
-            { label: "相关药品", value: alert.slot },
-            ...(alert.action ? [{ label: "建议做法", value: alert.action }] : []),
-          ].map(({ label, value }) => (
-            <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <span style={{ fontSize: 13, color: C.fgMuted }}>{label}</span>
-              <span style={{ fontSize: 13, fontWeight: 500, color: C.fg, textAlign: "right", maxWidth: "58%" }}>{value}</span>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={onClose} style={{
-            flex: 2, padding: "13px",
-            background: "linear-gradient(135deg, #3E9890, #2F7A74)",
-            color: "white", border: "none", borderRadius: 14,
-            fontSize: 14, fontWeight: 600, cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-            boxShadow: "0 4px 16px rgba(58,136,130,0.35)",
-          }}>
-            <Check size={15} />我已处理
-          </button>
-          <button style={{
-            flex: 1, padding: "13px", ...GLASS,
-            borderRadius: 14, fontSize: 14, fontWeight: 600, cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 7, color: C.fg,
-          }}>
-            <Phone size={15} />联系
-          </button>
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ─── Screen 4 · History ──────────────────────────────────────────
-
-const HISTORY_EVENTS = [
-  { time: "08:03", text: "早上药已确认服用", sub: "多奈哌齐片，1 片", color: C.green, iconType: "check" },
-  { time: "08:01", text: "早上药已取出", sub: "药盒显示已取出 1 片", color: C.teal, iconType: "activity" },
-  { time: "08:00", text: "已提醒外婆吃早上药", sub: "08:00 提醒：多奈哌齐片", color: C.amber, iconType: "dot" },
-  { time: "12:00", text: "中午药待服用", sub: "12:00 提醒：美金刚片，1 片", color: C.fgMuted, iconType: "clock" },
-];
-
-function HistoryScreen({ tab, setTab }: { tab: 0 | 1 | 2; setTab: (t: 0 | 1 | 2) => void }) {
-  return (
-    <div style={{ paddingBottom: 36 }}>
-      <div style={{ padding: "16px 16px 10px" }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.fg, margin: 0 }}>用药记录</h2>
-      </div>
-
-      {/* Segmented control */}
-      <div style={{ padding: "0 16px 14px" }}>
-        <div style={{ display: "flex", background: "rgba(210,208,203,0.55)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", borderRadius: 13, padding: 3, border: "1px solid rgba(255,255,255,0.6)" }}>
-          {(["今天", "昨天", "本周"] as const).map((label, i) => (
-            <button key={i} onClick={() => setTab(i as 0 | 1 | 2)} style={{
-              flex: 1, padding: "8px 0", borderRadius: 11,
-              background: tab === i ? "rgba(255,255,255,0.85)" : "transparent",
-              border: "none", cursor: "pointer",
-              fontSize: 13, fontWeight: tab === i ? 600 : 400,
-              color: tab === i ? C.fg : C.fgMuted,
-              boxShadow: tab === i ? "0 1px 6px rgba(0,0,0,0.1)" : "none",
-              transition: "all 0.15s", backdropFilter: tab === i ? "blur(8px)" : "none",
-            }}>
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Adherence card */}
-      <div style={{ padding: "0 16px 14px" }}>
-        <div style={{
-          background: "linear-gradient(135deg, #3E9890 0%, #2F7A74 55%, #3A8A90 100%)",
-          borderRadius: 18, padding: "18px 18px 16px",
-          boxShadow: "0 8px 28px rgba(58,136,130,0.3), 0 2px 8px rgba(0,0,0,0.1)",
-          position: "relative", overflow: "hidden",
-        }}>
-          <div style={{ position: "absolute", right: -30, top: -30, width: 120, height: 120, borderRadius: "50%", background: "rgba(255,255,255,0.08)" }} />
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, position: "relative" }}>
-            <div>
-              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.68)", marginBottom: 2 }}>本周按时率</div>
-              <div style={{ fontSize: 36, fontWeight: 800, color: "white", lineHeight: 1 }}>86%</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.68)", marginBottom: 2 }}>连续按时服药</div>
-              <div style={{ fontSize: 30, fontWeight: 700, color: "white", lineHeight: 1 }}>4 次</div>
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 5, alignItems: "flex-end", height: 34, position: "relative" }}>
-            {[85, 100, 67, 100, 100, 83, 86].map((pct, i) => (
-              <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                <div style={{ width: "100%", borderRadius: 4, height: (pct / 100) * 28, minHeight: 4, background: pct === 100 ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.38)", boxShadow: pct === 100 ? "0 0 6px rgba(255,255,255,0.5)" : "none" }} />
-                <span style={{ fontSize: 8.5, color: "rgba(255,255,255,0.55)" }}>{["一","二","三","四","五","六","日"][i]}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Timeline */}
-      <div style={{ padding: "0 16px" }}>
-        <SectionHeader>今天发生了什么</SectionHeader>
-        <GlassCard>
-          {HISTORY_EVENTS.map((ev, i) => (
-            <div key={i} style={{
-              padding: "13px 16px",
-              borderBottom: i < HISTORY_EVENTS.length - 1 ? "1px solid rgba(255,255,255,0.5)" : "none",
-              display: "flex", alignItems: "flex-start", gap: 12, position: "relative",
-            }}>
-              {i < HISTORY_EVENTS.length - 1 && (
-                <div style={{ position: "absolute", left: 29, top: 38, bottom: -1, width: 1.5, background: "rgba(255,255,255,0.5)" }} />
-              )}
-              <div style={{
-                width: 28, height: 28, borderRadius: 9, flexShrink: 0, zIndex: 1,
-                background: ev.iconType === "check" ? C.greenBg : ev.iconType === "clock" ? "rgba(242,241,238,0.7)" : "rgba(234,244,243,0.85)",
-                border: "1px solid rgba(255,255,255,0.65)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
-              }}>
-                {ev.iconType === "check" && <Check size={13} color={C.green} />}
-                {ev.iconType === "activity" && <Activity size={13} color={C.teal} />}
-                {ev.iconType === "dot" && <div style={{ width: 7, height: 7, borderRadius: "50%", background: C.amber }} />}
-                {ev.iconType === "clock" && <Clock size={13} color={C.fgMuted} />}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.3, color: ev.iconType === "clock" ? C.fgMuted : C.fg }}>{ev.text}</span>
-                  <span style={{ fontSize: 12, fontFamily: "monospace", color: C.fgMuted, flexShrink: 0 }}>{ev.time}</span>
-                </div>
-                <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 2 }}>{ev.sub}</div>
-              </div>
-            </div>
-          ))}
-        </GlassCard>
-      </div>
-    </div>
-  );
-}
-
-// ─── Screen 5 · Settings ─────────────────────────────────────────
-
-function SettingsScreen({
-  toggles, setToggles, status, post,
-}: {
-  toggles: { wrongSlot: boolean; dosage: boolean; missed: boolean; uncertain: boolean };
-  setToggles: React.Dispatch<React.SetStateAction<{ wrongSlot: boolean; dosage: boolean; missed: boolean; uncertain: boolean }>>;
-  status: ApiStatus;
-  post: (path: string, body?: unknown) => Promise<void>;
-}) {
-  return (
-    <div style={{ paddingBottom: 40 }}>
-      <div style={{ padding: "16px 16px 12px" }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.fg, margin: 0 }}>药盒设置</h2>
-      </div>
-
-      <div style={{ padding: "0 16px 14px" }}>
-        <SectionHeader>药盒状态</SectionHeader>
-        <GlassCard>
-          {[
-            { label: "药盒连接", value: "正常", valueColor: C.green, dot: true },
-            { label: "提醒方式", value: "声音 + 手机通知", valueColor: C.teal, dot: false },
-            { label: "识别后端", value: status.detector, valueColor: C.fgMid, dot: false },
-          ].map((item, i) => (
-            <div key={i} style={{ padding: "13px 16px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 14, color: C.fg }}>{item.label}</span>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                {item.dot && <Dot color={C.green} pulse />}
-                <span style={{ fontSize: 14, fontWeight: 500, color: item.valueColor }}>{item.value}</span>
-              </div>
-            </div>
-          ))}
-        </GlassCard>
-      </div>
-
-      <div style={{ padding: "0 16px 14px" }}>
-        <SectionHeader>服药计划</SectionHeader>
-        <GlassCard>
-          {MEDICINE_PLAN.map((s, i) => (
-            <div key={i} style={{ padding: "13px 16px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 40, height: 40, borderRadius: 12, background: "rgba(234,244,243,0.85)", border: "1px solid rgba(255,255,255,0.65)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
-                <Clock size={16} color={C.teal} />
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>{s.label} {s.time}</div>
-                <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 1 }}>{s.medicine} · {s.dose} · {s.type}</div>
-              </div>
-              <ChevronRight size={16} color={C.fgMuted} />
-            </div>
-          ))}
-        </GlassCard>
-      </div>
-
-      <div style={{ padding: "0 16px 14px" }}>
-        <SectionHeader>演示控制</SectionHeader>
-        <GlassCard>
-          {SLOT_ORDER.map((key, i) => (
-            <div key={key} style={{ padding: "11px 16px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ width: 44, fontSize: 13, fontWeight: 600, color: C.fg }}>{status.slots[key].label}</span>
-              <button onClick={() => post("/api/period", { period: key })} style={{ flex: 1, padding: "8px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.65)", background: status.current_period === key ? C.tealBg : "rgba(255,255,255,0.55)", color: status.current_period === key ? C.teal : C.fgMid, cursor: "pointer" }}>设为当前</button>
-              <button onClick={() => post("/api/simulate/take", { slot: key, count: 0 })} style={{ flex: 1, padding: "8px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.65)", background: "rgba(255,255,255,0.55)", color: C.fgMid, cursor: "pointer" }}>取空</button>
-            </div>
-          ))}
-        </GlassCard>
-      </div>
-
-      <div style={{ padding: "0 16px 14px" }}>
-        <SectionHeader>通知设置</SectionHeader>
-        <GlassCard>
-          {[
-            { label: "拿错药立即通知", key: "wrongSlot" as const, desc: "打开了不该吃的药格时" },
-            { label: "药量不对通知", key: "dosage" as const, desc: "取出的粒数和计划不一致时" },
-            { label: "未按时吃药通知", key: "missed" as const, desc: "超过 15 分钟还没取药时" },
-            { label: "看不清药盒通知", key: "uncertain" as const, desc: "药盒被遮挡或镜头看不清时" },
-          ].map((item, i) => (
-            <div key={i} style={{ padding: "13px 16px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 500, color: C.fg }}>{item.label}</div>
-                <div style={{ fontSize: 12, color: C.fgMuted, marginTop: 1 }}>{item.desc}</div>
-              </div>
-              <Toggle on={toggles[item.key]} onChange={() => setToggles(prev => ({ ...prev, [item.key]: !prev[item.key] }))} />
-            </div>
-          ))}
-        </GlassCard>
-      </div>
-
-      <div style={{ padding: "0 16px 16px" }}>
-        <SectionHeader>紧急联系人</SectionHeader>
-        <GlassCard>
-          {[
-            { name: "女儿", role: "主要家属", initials: "女" },
-            { name: "护理员", role: "专业护理", initials: "护" },
-          ].map((c, i) => (
-            <div key={i} style={{ padding: "13px 16px", borderBottom: i === 0 ? "1px solid rgba(255,255,255,0.5)" : "none", display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(196,228,225,0.7)", border: "1px solid rgba(255,255,255,0.7)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
-                <span style={{ fontSize: 14, fontWeight: 700, color: C.teal }}>{c.initials}</span>
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: C.fg }}>{c.name}</div>
-                <div style={{ fontSize: 12, color: C.fgMuted }}>{c.role}</div>
-              </div>
-              <button style={{ ...GLASS_TEAL, border: "1px solid rgba(255,255,255,0.65)", borderRadius: 9, padding: "6px 13px", color: C.teal, fontSize: 12, fontWeight: 500, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
-                <Phone size={12} />联系
-              </button>
-            </div>
-          ))}
-        </GlassCard>
-      </div>
-
-      <div style={{ padding: "0 16px" }}>
-        <button style={{
-          width: "100%", padding: "15px",
-          background: "linear-gradient(135deg, #3E9890, #2F7A74)",
-          color: "white", border: "none", borderRadius: 14,
-          fontSize: 15, fontWeight: 600, cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-          boxShadow: "0 4px 18px rgba(58,136,130,0.38)",
-        }}>
-          <Shield size={16} />保存用药设置
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ─── App root ────────────────────────────────────────────────────
-
+function HistoryScreen({ feed, connected }: { feed: Feed[]; connected: boolean }) { const [tab, setTab] = useState("all"); const tabs = [["all","全部"],["device","设备"],["family","家庭圈"],["plan","计划"],["review","复核"],["expiry","保质期"],["inventory","库存"]]; return <><Title title="事件记录" desc="设备事件来自 /api/events；家庭圈等来自当前浏览器的真实操作记录。" />{!connected && <Panel><span role="alert" style={{ color: palette.error }}>设备连接失败：此时只显示本机记录，设备历史暂不可用。</span></Panel>}<div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 13 }}>{tabs.map(([id, label]) => <button key={id} style={tab === id ? button : secondary} onClick={() => setTab(id)}>{label}</button>)}</div><FeedRows items={tab === "all" ? feed : feed.filter(e => e.category === tab)} /></>; }
+const navigation: { id: Screen; label: string; Icon: typeof Home }[] = [{ id: "dashboard", label: "首页", Icon: Home }, { id: "live", label: "药盒", Icon: Camera }, { id: "alerts", label: "提醒", Icon: Bell }, { id: "history", label: "记录", Icon: CalendarDays }, { id: "settings", label: "设置", Icon: Settings }];
 export default function App() {
-  const [screen, setScreen] = useState<Screen>("dashboard");
-  const [alertModal, setAlertModal] = useState<number | null>(null);
-  const [historyTab, setHistoryTab] = useState<0 | 1 | 2>(0);
-  const [toggles, setToggles] = useState({ wrongSlot: true, dosage: true, missed: true, uncertain: true });
-  const { status, connected, loading, refresh, post } = usePillboxStatus();
-
-  return (
-    <>
-      <style>{`
-        * { box-sizing: border-box; }
-        body { margin: 0; }
-        @keyframes scanLine {
-          0%   { top: 0%;   opacity: 0; }
-          5%   { opacity: 1; }
-          95%  { opacity: 1; }
-          100% { top: 100%; opacity: 0; }
-        }
-        @keyframes blink {
-          0%, 100% { opacity: 1; }
-          50%      { opacity: 0.15; }
-        }
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to   { transform: rotate(360deg); }
-        }
-        @keyframes slideUp {
-          from { transform: translateY(100%); }
-          to   { transform: translateY(0); }
-        }
-        ::-webkit-scrollbar { display: none; }
-        * { scrollbar-width: none; }
-      `}</style>
-
-      <div style={{
-        minHeight: "100vh",
-        background: C.bgFallback,
-        WebkitBackgroundImage: C.bgWebkit,
-        backgroundImage: C.bg,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        padding: 24,
-        fontFamily: "'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif",
-      }}>
-        {/* Phone frame */}
-        <div style={{
-          width: 393, height: 852,
-          background: C.bgFallback,
-          WebkitBackgroundImage: C.bgWebkit,
-          backgroundImage: C.bg,
-          borderRadius: 52,
-          border: "10px solid #0E0E0E",
-          boxShadow: [
-            "0 70px 140px rgba(0,0,0,0.5)",
-            "0 28px 56px rgba(0,0,0,0.28)",
-            "0 8px 16px rgba(0,0,0,0.15)",
-            "inset 0 0 0 1px rgba(255,255,255,0.08)",
-          ].join(", "),
-          overflow: "hidden",
-          display: "flex",
-          flexDirection: "column",
-          position: "relative",
-        }}>
-          {/* Dynamic island */}
-          <div style={{
-            position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
-            width: 118, height: 33, background: "#0E0E0E", borderRadius: 20, zIndex: 50,
-          }} />
-
-          <StatusBar />
-
-          {/* Fixed blob background layer */}
-          <div style={{
-            position: "absolute", top: 50, left: 0, right: 0, bottom: 78,
-            overflow: "hidden", pointerEvents: "none", zIndex: 0,
-          }}>
-            <ScreenBlobs screen={screen} />
-          </div>
-
-          {/* Scrollable content */}
-          <div style={{ position: "relative", zIndex: 1, flex: 1, overflowY: "auto", overflowX: "hidden" }}>
-            {screen === "dashboard" && <DashboardScreen onNav={setScreen} />}
-            {screen === "live" && <LiveScreen status={status} connected={connected} loading={loading} refresh={refresh} post={post} />}
-            {screen === "alerts" && <AlertsScreen alertModal={alertModal} setAlertModal={setAlertModal} />}
-            {screen === "history" && <HistoryScreen tab={historyTab} setTab={setHistoryTab} />}
-            {screen === "settings" && <SettingsScreen toggles={toggles} setToggles={setToggles} status={status} post={post} />}
-          </div>
-
-          <BottomNav current={screen} onChange={setScreen} />
-
-          {alertModal !== null && (
-            <AlertModal index={alertModal} onClose={() => setAlertModal(null)} />
-          )}
-        </div>
+  const [screen, setScreen] = useState<Screen>("dashboard"); const [data, setData] = useState<Data>(() => { try { return load(); } catch { return blank(); } }); const [storageError, setStorageError] = useState("");
+  const device = useDevice(); const feed = merged(device.events, data);
+  const change = (next: Data) => { try { save(next); setData(next); setStorageError(""); } catch { setStorageError("浏览器本地存储不可用，本次操作未保存。请检查隐私模式或空间。 "); } };
+  const alarms = device.events.filter(e => e.kind === "critical" || e.kind === "warning").length;
+  return <div style={{ minHeight: "100vh", background: "linear-gradient(135deg,#e4f1d7,#fcebea)", display: "flex", justifyContent: "center", alignItems: "center", fontFamily: "'Noto Sans SC','Microsoft YaHei',system-ui,sans-serif", color: palette.ink }}>
+    <div style={{ width: "min(100%, 420px)", height: "min(100dvh, 860px)", minHeight: 500, background: "linear-gradient(160deg,#eef6ed,#fcefee)", display: "flex", flexDirection: "column", boxShadow: "0 20px 80px #49635844", overflow: "hidden", position: "relative" }}>
+      <div style={{ height: 17, flexShrink: 0, background: "#307d78" }} />
+      <div style={{ flex: 1, overflowY: "auto" }} key={screen}>
+        {screen !== "dashboard" && <div style={{ padding: "12px 16px 0" }}><button style={secondary} onClick={() => setScreen("dashboard")}>‹ 返回首页</button></div>}
+        {(device.error || storageError) && <div role="alert" style={{ padding: "9px 16px", background: "#fff2ee", color: palette.error, fontSize: 12 }}>{device.error || storageError}</div>}
+        {screen === "dashboard" ? <Dashboard data={data} status={device.status} navigate={setScreen} alerts={alarms} /> : <div style={{ padding: "8px 16px 28px" }}>
+          {screen === "live" && <DeviceScreen status={device.status} post={device.post} busy={device.busy} refresh={device.refresh} />}
+          {screen === "alerts" && <AlertsScreen events={device.events} data={data} status={device.status} refresh={device.refresh} />}
+          {screen === "history" && <HistoryScreen feed={feed} connected={!!device.status} />}
+          {screen === "settings" && <SettingsScreen data={data} status={device.status} post={device.post} busy={device.busy} />}
+          {screen === "family" && <Family data={data} status={device.status} change={change} />}
+          {screen === "records" && <Records data={data} change={change} post={device.post} connected={!!device.status} />}
+          {screen === "review" && <ReviewScreen data={data} status={device.status} change={change} post={device.post} />}
+          {screen === "inventory" && <Inventory data={data} change={change} />}
+        </div>}
       </div>
-    </>
-  );
+      <nav aria-label="主导航" style={{ height: 67, flexShrink: 0, display: "flex", background: "rgba(255,255,255,.8)", borderTop: "1px solid #dbe6de" }}>{navigation.map(({ id, label, Icon }) => <button key={id} onClick={() => setScreen(id)} style={{ flex: 1, border: 0, background: "transparent", color: (screen === id || (id === "dashboard" && ["family","records","review","inventory"].includes(screen))) ? palette.teal : palette.muted, cursor: "pointer", font: "inherit", fontSize: 11, position: "relative" }}><Icon size={20} style={{ display: "block", margin: "0 auto 3px" }} />{label}{id === "alerts" && alarms > 0 && <span style={{ position: "absolute", top: 7, right: 20, height: 7, width: 7, borderRadius: "50%", background: palette.error }} />}</button>)}</nav>
+    </div>
+  </div>;
 }

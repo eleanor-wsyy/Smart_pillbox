@@ -2,29 +2,29 @@
 
 :root {
   --font-size: 16px;
-  --background: #f7f7f3;
-  --foreground: #252c29;
-  --card: #ffffff;
-  --card-foreground: #252c29;
+  --background: #fff7f4;
+  --foreground: #30392f;
+  --card: #fffffb;
+  --card-foreground: #30392f;
   --popover: #ffffff;
-  --popover-foreground: #252c29;
-  --primary: #315e51;
+  --popover-foreground: #30392f;
+  --primary: #3e6651;
   --primary-foreground: #ffffff;
-  --secondary: #edf2ed;
-  --secondary-foreground: #315e51;
+  --secondary: #edf2df;
+  --secondary-foreground: #3e6651;
   --muted: #E2E1DC;
-  --muted-foreground: #777d78;
-  --accent: #edf2ed;
-  --accent-foreground: #315e51;
+  --muted-foreground: #667164;
+  --accent: #f8eae6;
+  --accent-foreground: #3e6651;
   --destructive: #C43030;
   --destructive-foreground: #ffffff;
   --border: rgba(24, 38, 47, 0.09);
   --input: transparent;
-  --input-background: #f3f4f0;
+  --input-background: #fffdfa;
   --switch-background: #C0CDD6;
   --font-weight-medium: 500;
   --font-weight-normal: 400;
-  --ring: #315e51;
+  --ring: #3e6651;
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
@@ -178,4 +178,11 @@
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
   }
+}
+
+/* The supplied gradient is the app canvas, not a decorative accent behind it. */
+.app-shell, .app-canvas {
+  background: #FFEEEE; /* fallback for old browsers */
+  background: -webkit-linear-gradient(to right, #DDEFBB, #FFEEEE);
+  background: linear-gradient(to right, #DDEFBB, #FFEEEE);
 }

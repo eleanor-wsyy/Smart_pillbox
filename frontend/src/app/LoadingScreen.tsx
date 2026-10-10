@@ -4,7 +4,7 @@ import { expiryState, labels, logEvent, newId, slots, type Data, type SlotKey } 
 
 type SlotState = { pill_count: number; expected_count: number; confidence: number; present: boolean };
 type Props = { data: Data; status: { slots: Record<SlotKey, SlotState> } | null; change: (d: Data) => boolean };
-const ink = "#30392f", muted = "#667164", green = "#3e6651";
+const ink = "#30392f", muted = "#566353", green = "#3e6651";
 const card: React.CSSProperties = { background: "rgba(255,255,251,.84)", border: "1px solid rgba(255,255,255,.75)", borderRadius: 16, padding: 18, marginBottom: 12 };
 const small: React.CSSProperties = { color: muted, fontSize: 12, lineHeight: 1.6 };
 const btn: React.CSSProperties = { background: green, color: "white", border: 0, borderRadius: 9, padding: "12px 14px", font: "inherit", fontWeight: 600, cursor: "pointer" };

@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { useCallback, useEffect, useState } from "react";
-import { Home, Camera, Bell, CalendarDays, Settings, Users, FileText, PackageCheck, Pill, RefreshCw, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Home, Camera, Bell, CalendarDays, Settings, Users, FileText, PackageCheck, Pill, RefreshCw, AlertTriangle, CheckCircle2, ArrowLeft, ArrowRight } from "lucide-react";
 import { createWorker } from "tesseract.js";
 import { LoadingScreen } from "./LoadingScreen";
 import { blank, expiryDays, expiryState, labels, load, logEvent, newId, save, slots, type Data, type Handover, type Medicine, type Plan, type SlotKey } from "./store";
@@ -11,15 +11,15 @@ type ApiSlot = { key: SlotKey; label: string; pill_count: number; expected_count
 type Status = { online: boolean; current_period: SlotKey; current_period_label: string; system_state: string; updated_at: string; slots: Record<SlotKey, ApiSlot>; next_reminder: { label: string; time: string } };
 type Feed = { id: string; at: number; text: string; category: "device" | "family" | "plan" | "review" | "expiry" | "inventory"; severity?: string; timeLabel: string };
 const base = import.meta.env.VITE_API_BASE ?? "";
-const palette = { ink: "#30392f", muted: "#667164", teal: "#3e6651", pale: "#edf2df", warning: "#8b602e", error: "#aa504b" };
+const palette = { ink: "#30392f", muted: "#566353", teal: "#3e6651", pale: "#edf2df", warning: "#8b602e", error: "#aa504b" };
 const card: React.CSSProperties = { background: "rgba(255, 255, 251, .84)", border: "1px solid rgba(255,255,255,.75)", borderRadius: 16, padding: 18, boxShadow: "0 8px 24px rgba(84,80,65,.045)", marginBottom: 12 };
 const field: React.CSSProperties = { width: "100%", padding: "10px 12px", border: "1px solid #d6ddce", borderRadius: 9, background: "rgba(255,255,252,.9)", font: "inherit", color: palette.ink, margin: "6px 0" };
 const button: React.CSSProperties = { border: 0, borderRadius: 9, background: palette.teal, color: "white", padding: "10px 14px", font: "inherit", fontWeight: 600, cursor: "pointer" };
 const secondary: React.CSSProperties = { ...button, background: palette.pale, color: palette.teal };
 const small: React.CSSProperties = { fontSize: 12, color: palette.muted, lineHeight: 1.55 };
 function dateLabel(value: string | number) { const d = new Date(value); return Number.isNaN(d.getTime()) ? "时间未知" : d.toLocaleString("zh-CN", { hour12: false }); }
-function Panel({ children }: { children: React.ReactNode }) { return <section style={card}>{children}</section>; }
-function Title({ title, desc }: { title: string; desc?: string }) { return <header style={{ margin: "7px 2px 20px" }}><h2 style={{ margin: "0 0 5px", fontSize: 22 }}>{title}</h2>{desc && <div style={small}>{desc}</div>}</header>; }
+function Panel({ children, className = "" }: { children: React.ReactNode; className?: string }) { return <section className={`surface-card ${className}`} style={card}>{children}</section>; }
+function Title({ title, desc }: { title: string; desc?: string }) { return <header className="page-title"><h2>{title}</h2>{desc && <p>{desc}</p>}</header>; }
 function Empty({ children }: { children: React.ReactNode }) { return <p style={{ ...small, margin: "10px 0" }}>{children}</p>; }
 function useDevice() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -57,13 +57,33 @@ function FeedRows({ items }: { items: Feed[] }) { return items.length ? <>{items
 const counts = (plans: Plan[]) => Object.fromEntries(slots.map(s => [s, plans.filter(p => p.slot === s).reduce((sum, p) => sum + p.count, 0)])) as Record<SlotKey,number>;
 function Dashboard({ data, status, navigate, alerts }: { data: Data; status: Status | null; navigate: (s: Screen) => void; alerts: number }) {
   const current = data.handovers.find(h => h.confirmedAt && !h.endedAt);
+  const caretaker = current ? `${current.toName}（临时）` : data.members.find(m => m.role === "primary")?.name || "未设置";
+  const expiring = data.medicines.filter(m => !m.handledAt && expiryState(m) !== "ok").length;
+  const shortcuts = ([ ["家庭圈", "family", Users], ["病历录入", "records", FileText], ["装药记录", "review", PackageCheck], ["药品保质期", "inventory", Pill] ] as const);
   return <>
-    <div style={{ background: "rgba(255,255,250,.38)", color: palette.ink, padding: "29px 24px 30px", borderBottom: "1px solid rgba(255,255,255,.48)" }}><div style={{ fontSize: 12, opacity: .86 }}>SMART PILLBOX  /  家庭照看</div><h1 style={{ fontSize: 25, margin: "8px 0" }}>用药看护</h1><div>当前照看人：{current ? `${current.toName}（临时）` : data.members.find(m => m.role === "primary")?.name || "未设置"}</div><div style={{ fontSize: 12, marginTop: 8 }}>{status ? `设备已连接 · ${status.current_period_label}药格` : "设备未连接，状态不可用"}</div></div>
-    <main style={{ padding: 16 }}><Panel><strong>当前药格</strong>{status ? slots.map(k => <div key={k} style={{ paddingTop: 10, fontSize: 13 }}>{labels[k]}：检测到 {status.slots[k].pill_count} 粒 · 设备计划 {status.slots[k].expected_count} 粒 · {status.slots[k].status_label}</div>) : <Empty>连接后才能查看药格实时数据。</Empty>}<div style={{ ...small, marginTop: 10 }}>药格数量变化只表示取药，不代表已经吞服。</div></Panel>
-      <Panel><strong>已核对用药计划</strong>{data.plans.length ? data.plans.map(p => <div style={{ fontSize: 13, paddingTop: 9 }} key={p.id}>{labels[p.slot]} · {p.name} · {p.dose} · {p.count} 粒</div>) : <Empty>暂无已人工核对的用药计划。</Empty>}</Panel>
-      <Panel><strong>待关注</strong><div style={{ ...small, margin: "9px 0" }}>设备警报 {alerts} 条 · 临期/过期库存 {data.medicines.filter(m => !m.handledAt && expiryState(m) !== "ok").length} 项</div><button style={secondary} onClick={() => navigate("alerts")}>查看提醒</button></Panel>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>{([ ["家庭圈", "family", Users], ["病历录入", "records", FileText], ["装药记录", "review", PackageCheck], ["药品保质期", "inventory", Pill] ] as const).map(([label, to, Icon]) => <button key={to} onClick={() => navigate(to)} style={{ ...card, margin: 0, cursor: "pointer", textAlign: "left", color: palette.teal, fontWeight: 700 }}><Icon size={19} style={{ verticalAlign: "middle", marginRight: 6 }} />{label}</button>)}</div>
-    </main></>;
+    <header className="dashboard-hero">
+      <div className="eyebrow">SMART PILLBOX <span aria-hidden="true">/</span> 家庭照看</div>
+      <h1>用药看护</h1>
+      <p>让每一次照看，都更有把握。</p>
+      <div className="hero-meta"><span><Users size={15} aria-hidden="true" />照看人：{caretaker}</span><span className={status ? "device-connected" : "device-disconnected"}>{status ? <CheckCircle2 size={15} aria-hidden="true" /> : <AlertTriangle size={15} aria-hidden="true" />}{status ? `设备已连接 · ${status.current_period_label}药格` : "设备未连接"}</span></div>
+    </header>
+    <main className="dashboard-content">
+      <div className="section-label"><h2>当前药格</h2><span>设备实时状态</span></div>
+      <Panel className="slot-panel">
+        {status ? slots.map(k => <div className="slot-row" key={k}>
+          <div className="slot-row-heading"><strong>{labels[k]}</strong><span className="slot-status">{status.slots[k].status_label}</span></div>
+          <div className="slot-quantity">检测到 <strong>{status.slots[k].pill_count}</strong> 粒<span>计划 {status.slots[k].expected_count} 粒</span></div>
+        </div>) : <Empty>连接后才能查看药格实时数据。</Empty>}
+        <p className="support-note">药格数量变化只表示取药，不代表已经吞服。</p>
+      </Panel>
+      <div className="section-label"><h2>用药计划</h2><span>已人工核对</span></div>
+      <Panel className="plan-panel">{data.plans.length ? data.plans.map(p => <div className="plan-row" key={p.id}><span className="plan-slot">{labels[p.slot]}</span><div><strong>{p.name}</strong><small>{p.dose} · {p.count} 粒</small></div></div>) : <Empty>暂无已人工核对的用药计划。</Empty>}</Panel>
+      <div className="section-label"><h2>待关注</h2></div>
+      <Panel className="attention-panel"><div className="attention-summary"><div><strong>{alerts}</strong><span>设备警报</span></div><div><strong>{expiring}</strong><span>临期/过期库存</span></div></div><button className="attention-action" style={secondary} onClick={() => navigate("alerts")}>查看提醒 <ArrowRight size={17} aria-hidden="true" /></button></Panel>
+      <div className="section-label"><h2>常用功能</h2></div>
+      <div className="quick-actions">{shortcuts.map(([label, to, Icon]) => <button className="quick-action" key={to} onClick={() => navigate(to)}><Icon size={21} strokeWidth={1.8} aria-hidden="true" /><span>{label}</span><ArrowRight size={15} aria-hidden="true" /></button>)}</div>
+    </main>
+  </>;
 }
 function Family({ data, status, change }: { data: Data; status: Status | null; change: (next: Data) => void }) {
   const [name, setName] = useState(""); const [role, setRole] = useState<"primary" | "temporary">("temporary");
@@ -144,8 +164,8 @@ export default function App() {
   return <div className="app-shell" style={{ minHeight: "100vh", display: "flex", justifyContent: "center", alignItems: "center", fontFamily: "'Noto Sans SC','Microsoft YaHei',system-ui,sans-serif", color: palette.ink }}>
     <div className="app-canvas" style={{ width: "min(100%, 420px)", height: "min(100dvh, 860px)", minHeight: 500, display: "flex", flexDirection: "column", boxShadow: "0 14px 48px rgba(72,77,54,.12)", overflow: "hidden", position: "relative" }}>
       <div style={{ height: 6, flexShrink: 0, background: "rgba(85,117,74,.25)" }} />
-      <div style={{ flex: 1, overflowY: "auto" }} key={screen}>
-        {screen !== "dashboard" && <div style={{ padding: "12px 16px 0" }}><button style={secondary} onClick={() => setScreen("dashboard")}>‹ 返回首页</button></div>}
+      <div className="app-scroll" style={{ flex: 1, overflowY: "auto" }} key={screen}>
+        {screen !== "dashboard" && <div className="back-wrap"><button className="back-button" style={secondary} onClick={() => setScreen("dashboard")}><ArrowLeft size={17} aria-hidden="true" />返回首页</button></div>}
         {(device.error || storageError) && <div role="alert" style={{ padding: "9px 16px", background: "rgba(255,244,237,.9)", color: palette.error, fontSize: 12 }}>{device.error || storageError}</div>}
         {screen === "dashboard" ? <Dashboard data={data} status={device.status} navigate={setScreen} alerts={alarms} /> : <div style={{ padding: "8px 16px 28px" }}>
           {screen === "live" && <DeviceScreen status={device.status} post={device.post} busy={device.busy} refresh={device.refresh} />}
@@ -158,7 +178,7 @@ export default function App() {
           {screen === "inventory" && <Inventory data={data} change={change} />}
         </div>}
       </div>
-      <nav aria-label="主导航" style={{ height: 67, flexShrink: 0, display: "flex", background: "rgba(255,255,251,.86)", backdropFilter: "blur(14px)", borderTop: "1px solid rgba(255,255,255,.7)" }}>{navigation.map(({ id, label, Icon }) => <button key={id} onClick={() => setScreen(id)} style={{ flex: 1, border: 0, background: "transparent", color: (screen === id || (id === "dashboard" && ["family","records","review","inventory"].includes(screen))) ? palette.teal : palette.muted, cursor: "pointer", font: "inherit", fontSize: 11, position: "relative" }}><Icon size={20} style={{ display: "block", margin: "0 auto 3px" }} />{label}{id === "alerts" && alarms > 0 && <span style={{ position: "absolute", top: 7, right: 20, height: 7, width: 7, borderRadius: "50%", background: palette.error }} />}</button>)}</nav>
+      <nav className="bottom-nav" aria-label="主导航">{navigation.map(({ id, label, Icon }) => { const active = screen === id; return <button className="nav-button" key={id} aria-current={active ? "page" : undefined} onClick={() => setScreen(id)}><Icon size={21} strokeWidth={active ? 2.2 : 1.8} aria-hidden="true" /><span>{label}</span>{id === "alerts" && alarms > 0 && <span className="nav-alert" aria-label={`${alarms} 条设备警报`} />}</button>; })}</nav>
     </div>
   </div>;
 }

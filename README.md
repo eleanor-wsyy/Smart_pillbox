@@ -1,6 +1,10 @@
-# Smart Pillbox: Memory Echo Vision Prototype
+# Smart Pillbox · 智能药盒演示
 
-阿尔茨海默症长者辅助服药的智能药盒视觉识别原型。项目通过 OpenCV/Pillow 构建可交互演示界面，并把药丸视觉检测、药格空间映射、取药事件防抖、时间段防错药、处方剂量核对和声光语音反馈串成一套完整流程。
+> **正式演示入口：main 分支。** 家庭圈、用药计划、库存、装药记录及设备状态均在 frontend/。从仓库默认分支下载后按下方「完整演示启动」运行；旧版 OpenCV 独立窗口见后文。
+
+阿尔茨海默症长者辅助服药的智能药盒课程原型。完整网页演示由 React 家属端、FastAPI 模拟设备接口组成；另有独立 OpenCV/Pillow 摄像头原型。家庭圈、计划、装药记录等使用网页入口，摄像头程序不直接提供网页实时视频。
+
+下图为独立视觉原型的旧版截图，并非当前网页界面。
 
 ![demo](assets/demo_snapshot_v3_2.png)
 
@@ -18,7 +22,9 @@
 
 ```text
 .
-├── smart_pillbox_opencv.py      # 主程序
+├── frontend/                    # 正式网页演示（含家庭圈）
+├── api_server.py               # FastAPI 模拟设备接口
+├── smart_pillbox_opencv.py      # 独立视觉原型
 ├── assets/
 │   └── demo_snapshot_v3_2.png   # 演示截图
 ├── docs/
@@ -134,36 +140,35 @@ roi
 
 本项目是课程作业与原型演示，不可作为真实医疗诊断或用药决策系统。真实使用前需要经过专业数据采集、模型验证、隐私合规与医疗安全评估。
 
-## Frontend Mobile App Demo
+## 完整演示启动（Windows PowerShell）
 
-The `frontend/` directory contains the caregiver-facing mobile monitoring demo exported from Figma Make. It is a Vite + React prototype for viewing pillbox status, live monitoring, medication history, alerts, and settings.
+从 GitHub 下载/克隆 **`main` 分支**，在仓库根目录执行。建议 Node.js 22、Python 3.10+。前端首次安装需要联网；浏览器端中文 OCR 首次加载语言包也需要联网。
 
-Run the frontend demo:
+终端一（FastAPI 模拟设备接口）：
 
-```bash
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn api_server:app --host 127.0.0.1 --port 8000
+```
+
+终端二（React 前端；从仓库根目录进入）：
+
+```powershell
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-If you use pnpm:
+打开 http://127.0.0.1:5173/ ，依次检查「家庭圈」「装药记录」入口。前端构建验证：`npm run build`。`npm ci` 使用已提交的 `package-lock.json`，不要在新机器上用 `npm install` 手动补缺失依赖。
 
-```bash
-cd frontend
-pnpm install
-pnpm dev
-```
+如果使用 pnpm，**不要和 npm 在同一份 `node_modules` 混装**；在干净的前端目录改用 `pnpm install --frozen-lockfile`、`pnpm dev`、`pnpm build`。`pnpm-workspace.yaml` 不再把原生依赖限定到 Linux，pnpm 会按当前 Windows/Linux 系统选择可选包；`pnpm-lock.yaml` 已提交。
 
-Suggested full-system story for presentation:
+Linux/macOS：把 `py -3` 换为 `python3`，虚拟环境的 Python 路径换为 `.venv/bin/python`；前端仍在 `frontend/` 执行相同的 npm 命令。
 
-```text
-Python OpenCV / YOLO smart pillbox backend
-        -> pill count, debounced take events, slot status, alerts
-        -> future API layer such as Flask or FastAPI
-        -> frontend mobile caregiver dashboard
-```
+`frontend/vite.config.ts` 将 `/api` 代理到本机 8000。家庭成员、计划和装药照片保存在**当前浏览器**的 localStorage，换浏览器或清除站点数据后不会同步。设备数据来自 FastAPI 模拟器（非真实摄像头视频）；首页无后端时会显示连接错误，不应将其视为完整演示。详细流程和限制见 [前端说明](frontend/README.md)。
 
-The current frontend is a visual and interaction prototype. It does not yet call the Python camera program directly.
+当前系统：Python 模拟设备状态及事件 → FastAPI `/api` → Vite 代理 → 家属端界面。独立 OpenCV/YOLO 摄像头程序的运行方式见前文，不等于网页实时视频。
 
 ## Roboflow SDK Integration Note
 

@@ -2,23 +2,27 @@
 
 基于 React + Vite + TypeScript 的单机演示界面。设备状态与设备事件读取 FastAPI；家庭成员、交接单、人工确认的用药计划、库存和装药记录（含压缩后的照片）保存在**当前浏览器**的 localStorage。首次进入不预置病例、服药记录或家属。
 
-## 本地启动
+## 本地启动（正式演示：main 分支）
 
-在仓库根目录运行：
-
-```powershell
-python -m pip install -r requirements.txt
-python -m uvicorn api_server:app --host 127.0.0.1 --port 8000
-```
-
-另开终端，进入 `frontend`：
+在 Windows PowerShell 中，从仓库根目录启动后端（建议 Python 3.10+）：
 
 ```powershell
-pnpm install
-pnpm dev
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn api_server:app --host 127.0.0.1 --port 8000
 ```
 
-打开 http://127.0.0.1:5173/ 。`vite.config.ts` 将 `/api` 代理到本机 8000。生产部署可设置 `VITE_API_BASE`。构建：`pnpm build`。前端开发依赖首次安装需要允许 `pnpm-workspace.yaml` 中列出的原生构建脚本。
+另开终端，进入 `frontend`（建议 Node.js 22；首次安装需要联网）：
+
+```powershell
+cd frontend
+npm ci
+npm run dev
+```
+
+打开 http://127.0.0.1:5173/ 。验证构建运行 `npm run build`。`npm ci` 会严格使用仓库提交的 `package-lock.json`；不要在新机器手工补依赖。若改用 pnpm，在干净目录运行 `pnpm install --frozen-lockfile`、`pnpm dev`、`pnpm build`，不要与 npm 混装。`pnpm-workspace.yaml` 不再限定 Linux-only 架构，原生可选包按当前系统安装。Linux/macOS 后端使用 `python3 -m venv .venv`、`.venv/bin/python -m pip` 和 `.venv/bin/python -m uvicorn`。
+
+`vite.config.ts` 将 `/api` 代理到本机 8000。生产部署可设置 `VITE_API_BASE`。家庭圈等本地数据保存在当前浏览器，不跨设备同步；浏览器端中文 OCR 首次识别需联网下载语言包。
 
 ## 功能与安全边界
 

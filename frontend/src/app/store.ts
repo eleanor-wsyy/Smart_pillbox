@@ -8,9 +8,10 @@ export type LocalEvent = { id: string; at: string; type: "family" | "plan" | "re
 export type SlotSnapshot = { slot: SlotKey; count: number; expected: number; status: string };
 export type Handover = { id: string; fromId: string; fromName: string; toId: string; toName: string; createdAt: string; confirmedAt?: string; endedAt?: string; note: string; planSnapshot: Plan[]; slotSnapshot: SlotSnapshot[] | null; reminders: string[] };
 export type Review = { id: string; at: string; slot: SlotKey; count: number; expected: number; planName: string; imageName?: string; result: string; passed: boolean };
-export type Data = { members: Member[]; plans: Plan[]; medicines: Medicine[]; handovers: Handover[]; reviews: Review[]; events: LocalEvent[] };
+export type LoadingRecord = { id: string; at: string; actor: string; slots: { slot: SlotKey; count: number; expected: number; planName: string }[]; image: string };
+export type Data = { loadings: LoadingRecord[]; members: Member[]; plans: Plan[]; medicines: Medicine[]; handovers: Handover[]; reviews: Review[]; events: LocalEvent[] };
 const key = "smart-pillbox-care-v1";
-export const blank = (): Data => ({ members: [], plans: [], medicines: [], handovers: [], reviews: [], events: [] });
+export const blank = (): Data => ({ loadings: [], members: [], plans: [], medicines: [], handovers: [], reviews: [], events: [] });
 export function load(): Data {
   try {
     const value = JSON.parse(localStorage.getItem(key) || "null");
